@@ -1,0 +1,8 @@
+old_pipeline_steps/
+ADRC/
+ADRC_PIB/
+ADRC_TAU/
+BN_Atlas_freesurfer
+pipeline/
+__pycache__/
+*.egg-info/
