@@ -6,3 +6,4 @@ BN_Atlas_freesurfer
 pipeline/
 __pycache__/
 *.egg-info/
+mr_pet_pipeline/config/config.yaml
