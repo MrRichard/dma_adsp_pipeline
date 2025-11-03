@@ -63,6 +63,10 @@ class PipelineConfig:
     run_brainnetome: bool = True
     run_pvc: bool = False
     
+    petpvc_container: Optional[Path] = None
+    pvc_method: str = "MG"
+    pvc_fwhm: List[float] = field(default_factory=lambda: [6.0, 6.0, 6.0])
+    
     # SLURM settings
     slurm: SLURMConfig = field(default_factory=SLURMConfig)
     
@@ -129,6 +133,8 @@ class PipelineConfig:
             self.antsaffine_path = Path(self.antsaffine_path)
         if self.resample_path:
             self.resample_path = Path(self.resample_path)
+        if self.petpvc_container:
+            self.petpvc_container = Path(self.petpvc_container)
         
         # Create SLURM config from dict if needed
         if isinstance(self.slurm, dict):
@@ -190,17 +196,20 @@ class PipelineConfig:
                     if not (self.brainnetome_dir / fname).exists():
                         errors.append(f"Required Brainnetome file not found: {fname}")
         
-        # Check PVC dependencies if enabled
+        # NEW: Validate PVC setup
         if self.run_pvc:
-            if not self.petpvc_path:
-                errors.append("PVC enabled but petpvc_path not specified")
-            elif not self.petpvc_path.exists():
-                errors.append(f"PVC enabled but PETPVC executable not found: {self.petpvc_path}")
-            else:
-                # Check if file is executable
-                import os
-                if not os.access(self.petpvc_path, os.X_OK):
-                    errors.append(f"PETPVC path exists but is not executable: {self.petpvc_path}")
+            if not self.petpvc_container:
+                errors.append("PVC enabled but petpvc_container not specified")
+            elif not self.petpvc_container.exists():
+                errors.append(f"PETPVC container not found: {self.petpvc_container}")
+            
+            # Validate FWHM
+            if len(self.pvc_fwhm) != 3:
+                errors.append("pvc_fwhm must have 3 values [x, y, z]")
+            if any(f <= 0 for f in self.pvc_fwhm):
+                errors.append("pvc_fwhm values must be positive")
+        
+        return errors
         
         # Validate age range
         if self.validation['min_age'] >= self.validation['max_age']:

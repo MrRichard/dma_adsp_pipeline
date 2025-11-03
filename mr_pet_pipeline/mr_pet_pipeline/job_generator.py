@@ -224,22 +224,22 @@ echo "=== Running additional segmentation modules ==="
 # WMH-SynthSeg (White Matter Hyperintensities)
 echo "Running WMH-SynthSeg..."
 mri_WMHsynthseg \\
-  --i /subjects_dir/{session_id}/mri/norm.mgz \\
-  --o /subjects_dir/{session_id}/mri/wmh_synthseg.mgz \\
-  --csv_vols /subjects_dir/{session_id}/mri/wmh_volumes.csv \\
+  --i /output/{session_id}/mri/norm.mgz \\
+  --o /output/{session_id}/mri/wmh_synthseg.mgz \\
+  --csv_vols /output/{session_id}/mri/wmh_volumes.csv \\
   --threads {fs_config['cpus']} --crop
 
 # Hypothalamic Subunits
 echo "Running Hypothalamic Subunits..."
 mri_segment_hypothalamic_subunits \\
   --s {session_id} \\
-  --sd /subjects_dir/ \\
+  --sd /output/ \\
   --threads {fs_config['cpus']} \\
   --cpu
 
 # Hippocampal Subfields and Nuclei of Amygdala
 echo "Running Hippocampal Subfields and Nuclei of Amygdala..."
-export SUBJECTS_DIR=/subjects_dir/
+export SUBJECTS_DIR=/output/
 segment_subregions hippo-amygdala --cross {session_id}
 """
 
@@ -252,41 +252,161 @@ segment_subregions hippo-amygdala --cross {session_id}
 echo "=== Adding Brainnetome Atlas ==="
 
 # Create label directory if needed
-mkdir -p /subjects_dir/{session_id}/label
+mkdir -p /output/{session_id}/label
 
 # Add Brainnetome atlas - left hemisphere
 echo "Processing left hemisphere Brainnetome atlas..."
 mris_ca_label -orig white -novar \\
     {session_id} lh sphere.reg \\
     /brainnetome_files/lh.BN_Atlas.gcs \\
-    /subjects_dir/{session_id}/label/lh.BN_Atlas.annot
+    /output/{session_id}/label/lh.BN_Atlas.annot
 
 # Add Brainnetome atlas - right hemisphere  
 echo "Processing right hemisphere Brainnetome atlas..."
 mris_ca_label -orig white -novar \\
     {session_id} rh sphere.reg \\
     /brainnetome_files/rh.BN_Atlas.gcs \\
-    /subjects_dir/{session_id}/label/rh.BN_Atlas.annot
+    /output/{session_id}/label/rh.BN_Atlas.annot
 
 # Generate Brainnetome aparc2aseg (volumetric version)
 echo "Generating volumetric Brainnetome atlas..."
 mri_aparc2aseg --s {session_id} --annot BN_Atlas \\
-    --o /subjects_dir/{session_id}/mri/BN_Atlas+aseg.mgz
+    --o /output/{session_id}/mri/BN_Atlas+aseg.mgz
 
 # Generate statistics
 echo "Generating Brainnetome atlas statistics..."
 mri_segstats --annot {session_id} lh BN_Atlas \\
-    --sum /subjects_dir/{session_id}/stats/lh.BN_Atlas.stats
+    --sum /output/{session_id}/stats/lh.BN_Atlas.stats
 
 mri_segstats --annot {session_id} rh BN_Atlas \\
-    --sum /subjects_dir/{session_id}/stats/rh.BN_Atlas.stats
+    --sum /output/{session_id}/stats/rh.BN_Atlas.stats
+"""
+
+    def _get_pvc_processing_script(self, session_id: str, tracer: str) -> str:
+        """Generate PVC processing preparation section"""
+        if not self.config.run_pvc:
+            return ""
+        
+        # Get PVC parameters from config
+        pvc_method = getattr(self.config, 'pvc_method', 'MG')
+        pvc_fwhm = getattr(self.config, 'pvc_fwhm', [6.0, 6.0, 6.0])
+        fwhm_str = f"{pvc_fwhm[0]},{pvc_fwhm[1]},{pvc_fwhm[2]}"
+        
+        return f"""
+echo "=== Preparing for Partial Volume Correction ==="
+
+# Convert FreeSurfer segmentation to NIfTI for PETPVC
+mri_convert /fs_subjects/{session_id}/mri/aparc+aseg.mgz \\
+    aparc+aseg.nii.gz
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to convert segmentation"
+    exit 1
+fi
+
+echo "Segmentation converted successfully"
+
+# Create PVC working directory
+mkdir -p pvc_work
+cd pvc_work
+cp ../{tracer}_SUVR.nii.gz .
+cp ../aparc+aseg.nii.gz .
+cd ..
+
+echo "PVC setup complete (Method: {pvc_method}, FWHM: {fwhm_str} mm)"
 """
 
     def _generate_pet_slurm_content(self, session: SubjectSession, 
                                    tracer: str, session_id: str) -> str:
-        """Generate SLURM script content for PET processing using FreeSurfer tools"""
+        """Generate SLURM script content for PET processing with optional PVC using separate container"""
         
         pet_settings = self.config.slurm.pet
+        pvc_section = self._get_pvc_processing_script(session_id, tracer)
+        
+        # PVC parameters
+        pvc_method = getattr(self.config, 'pvc_method', 'MG')
+        pvc_fwhm = getattr(self.config, 'pvc_fwhm', [6.0, 6.0, 6.0])
+        fwhm_str = f"{pvc_fwhm[0]},{pvc_fwhm[1]},{pvc_fwhm[2]}"
+        
+        # Determine if we should run PVC
+        run_pvc = self.config.run_pvc
+        petpvc_container = getattr(self.config, 'petpvc_container', None)
+        
+        # PVC execution block (runs in host, using separate PETPVC container)
+        # NOTE: Using raw string to avoid escape sequence warnings
+        pvc_execution = ""
+        if run_pvc and petpvc_container:
+            # Build the bash script separately to avoid escape issues
+            pvc_stats_script = r"""
+    cd /output
+    
+    # Generate statistics for DKT atlas regions (PVC-corrected)
+    mri_segstats --i """ + f"{tracer}_SUVR_pvc.nii.gz" + r""" \
+                 --seg /fs_subjects/""" + f"{session_id}" + r"""/mri/aparc+aseg.mgz \
+                 --ctab /usr/local/freesurfer/8.0.0-1/FreeSurferColorLUT.txt \
+                 --sum """ + f"{tracer}_DKT_ROI_stats_pvc.txt" + r"""
+    
+    # Create simple CSV format for PVC data
+    echo 'Region,Mean_SUVR_PVC,Volume_mm3' > """ + f"{tracer}_DKT_stats_pvc.csv" + r"""
+    tail -n +3 """ + f"{tracer}_DKT_ROI_stats_pvc.txt" + r""" | while read line; do
+        if [[ $line =~ ^[[:space:]]*[0-9] ]]; then
+            region=$(echo $line | awk '{print $5}')
+            volume=$(echo $line | awk '{print $4}')
+            mean_val=$(echo $line | awk '{print $6}')
+            echo "$region,$mean_val,$volume" >> """ + f"{tracer}_DKT_stats_pvc.csv" + r"""
+        fi
+    done
+    
+    echo 'PVC statistics extraction completed'
+"""
+            
+            pvc_execution = f"""
+echo ""
+echo "=== Running PETPVC Container for Partial Volume Correction ==="
+
+# Run PETPVC in separate container
+singularity exec \\
+  -B $OUTPUT_DIR:/data \\
+  -B $FS_DIR:/fs_data \\
+  {petpvc_container} \\
+  petpvc \\
+    -i /data/pvc_work/{tracer}_SUVR.nii.gz \\
+    -m /data/pvc_work/aparc+aseg.nii.gz \\
+    -o /data/{tracer}_SUVR_pvc.nii.gz \\
+    --pvc {pvc_method} \\
+    --fwhm {fwhm_str}
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: PETPVC failed"
+    exit 1
+fi
+
+echo "PVC completed successfully"
+
+# Extract ROI statistics from PVC-corrected image
+echo "Extracting ROI statistics from PVC-corrected image..."
+
+singularity exec --nv \\
+  --env FREESURFER_HOME="/usr/local/freesurfer/8.0.0-1" \\
+  --env SUBJECTS_DIR="/fs_subjects/" \\
+  -B {self.config.freesurfer_license}:/usr/local/freesurfer/8.0.0-1/license.txt \\
+  -B $FS_DIR:/fs_subjects/{session_id} \\
+  -B $OUTPUT_DIR:/output/ \\
+  {self.config.container_path} \\
+  bash -c "{pvc_stats_script}"
+
+if [ $? -eq 0 ]; then
+    echo "SUCCESS: PVC statistics extracted"
+else
+    echo "ERROR: Failed to extract PVC statistics"
+    exit 1
+fi
+
+# Cleanup PVC working directory
+rm -rf $OUTPUT_DIR/pvc_work
+
+echo "PVC processing completed at: $(date)"
+"""
         
         return f"""#!/bin/bash
 #SBATCH --job-name=PET_{tracer}_{session_id[:10]}
@@ -309,18 +429,12 @@ export FS_LICENSE={self.config.freesurfer_license}
 
 echo "Starting {tracer.upper()} PET processing for {session_id}"
 echo "Started at: $(date)"
+{"echo 'PVC: ENABLED (" + pvc_method + " method, FWHM=" + fwhm_str + ")'" if run_pvc else "echo 'PVC: DISABLED'"}
 
-# Define paths (simplified directory structure)
+# Define paths
 PET_FILE={session.pet_files[tracer]}
 FS_DIR={self.config.output_dir}/freesurfer/{session_id}
 OUTPUT_DIR={self.config.output_dir}/pet/{session_id}/{tracer}
-
-# Check FreeSurfer completion
-if [ ! -f "$FS_DIR/freesurfer_completed.flag" ]; then
-    echo "ERROR: FreeSurfer processing not completed for {session_id}"
-    echo "Expected flag: $FS_DIR/freesurfer_completed.flag"
-    exit 1
-fi
 
 # Check if PET output already exists
 if [ -f "$OUTPUT_DIR/pet_processing_completed.flag" ]; then
@@ -440,9 +554,9 @@ else
     echo "Using raw PET values for {tracer}"
     cp {tracer}_pet_space-T1w.nii.gz {tracer}_SUVR.nii.gz
 fi
-
+{pvc_section}
 # Step 5: Extract basic ROI statistics using FreeSurfer tools
-echo "=== Extracting ROI statistics ==="
+echo "=== Extracting ROI statistics (Raw) ==="
 
 # Generate statistics for DKT atlas regions
 mri_segstats --i {tracer}_SUVR.nii.gz \\
@@ -461,12 +575,13 @@ tail -n +3 {tracer}_DKT_ROI_stats.txt | while read line; do
     fi
 done
 
-echo "=== PET processing completed at: $(date) ==="
+echo "=== PET processing (in-container) completed at: $(date) ==="
 EOF
 
 chmod +x pet_processing_script.sh
 
 # Run PET processing in FreeSurfer container
+echo "Running PET processing in FreeSurfer container..."
 singularity exec --nv \\
   --env FREESURFER_HOME="/usr/local/freesurfer/8.0.0-1" \\
   --env SUBJECTS_DIR="/fs_subjects/" \\
@@ -478,7 +593,15 @@ singularity exec --nv \\
   {self.config.container_path} \\
   bash /output/pet_processing_script.sh
 
-# Check completion
+# Check completion of FreeSurfer container processing
+if [ $? -ne 0 ]; then
+    echo "ERROR: PET processing in FreeSurfer container failed"
+    exit 1
+fi
+
+echo "FreeSurfer container processing completed successfully"
+{pvc_execution}
+# Final completion check
 if [ $? -eq 0 ]; then
     echo "SUCCESS: {tracer.upper()} PET processing completed for {session_id}"
     touch pet_processing_completed.flag

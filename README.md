@@ -313,7 +313,6 @@ force_reprocess: false  # Default
 ```
 
 **Behavior:**
-- Checks for `freesurfer_completed.flag` in output directories
 - Skips sessions with completed recons
 - Only processes new or incomplete sessions
 - Reports skipped sessions in summary
@@ -344,7 +343,6 @@ output_directory/
 │   │   ├── surf/
 │   │   ├── label/
 │   │   ├── stats/
-│   │   └── freesurfer_completed.flag
 │   └── sub-002_ses-08234/
 │       └── ...
 ├── pet/
