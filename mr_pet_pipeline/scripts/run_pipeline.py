@@ -58,9 +58,26 @@ Examples:
         action='store_true',
         help='Only validate configuration and inputs, do not generate jobs'
     )
-    
+
+    parser.add_argument(
+        '--post-recon',
+        action='store_true',
+        help='Generate jobs for post-FreeSurfer steps only (additional modules, Brainnetome, PET processing) for already completed recons'
+    )
+
+    parser.add_argument(
+        '--pet-only',
+        action='store_true',
+        help='Generate PET processing jobs only (no FreeSurfer recon jobs). Requires completed FreeSurfer recons.'
+    )
+
     args = parser.parse_args()
-    
+
+    # Check for mutually exclusive flags
+    if args.post_recon and args.pet_only:
+        print("Error: --post-recon and --pet-only are mutually exclusive")
+        return 1
+
     # Check if config file exists
     if not args.config.exists():
         print(f"Error: Configuration file not found: {args.config}")
@@ -95,9 +112,12 @@ Examples:
         # Initialize and run pipeline
         print("\nInitializing pipeline orchestrator...")
         orchestrator = PipelineOrchestrator(config)
-        
+
         print("\nRunning pipeline setup...")
-        job_files = orchestrator.run_pipeline()
+        job_files = orchestrator.run_pipeline(
+            post_recon_only=args.post_recon,
+            pet_only=args.pet_only
+        )
         
         # Print summary
         print("\n" + "=" * 80)
@@ -105,9 +125,10 @@ Examples:
         print("=" * 80)
         print(f"\n📁 Output directory: {config.output_dir}")
         print(f"\n📊 Jobs created:")
-        print(f"   - FreeSurfer jobs: {len(job_files['freesurfer'])}")
-        print(f"   - PET jobs: {len(job_files['pet'])}")
-        print(f"   - Total: {len(job_files['freesurfer']) + len(job_files['pet'])}")
+        print(f"   - FreeSurfer jobs: {len(job_files.get('freesurfer', []))}")
+        print(f"   - Post-recon jobs: {len(job_files.get('post_recon', []))}")
+        print(f"   - PET jobs: {len(job_files.get('pet', []))}")
+        print(f"   - Total: {len(job_files.get('freesurfer', [])) + len(job_files.get('post_recon', [])) + len(job_files.get('pet', []))}")
         
         print(f"\n📋 Summary reports:")
         print(f"   - JSON: {config.output_dir}/pipeline_summary.json")

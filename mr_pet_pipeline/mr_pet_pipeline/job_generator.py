@@ -45,6 +45,40 @@ class SLURMJobGenerator:
         self.logger.debug(f"Created FreeSurfer job: {job_file}")
         return job_file
     
+    def create_post_recon_job(self, session: SubjectSession) -> Path:
+        """
+        Create SLURM job for post-recon processing (additional modules + Brainnetome + PET)
+        This assumes FreeSurfer recon-all has already completed successfully
+
+        Args:
+            session: SubjectSession object
+
+        Returns:
+            Path to created job file
+        """
+        job_dir = self.config.output_dir / "jobs"
+        job_dir.mkdir(parents=True, exist_ok=True)
+
+        session_id = session.get_session_id()
+        job_file = job_dir / f"{session_id}_post_recon.slurm"
+
+        fs_subjects_dir = self.config.output_dir / "freesurfer"
+        fs_output_dir = fs_subjects_dir / session_id
+
+        # Check that FreeSurfer has completed
+        completion_flag = fs_output_dir / "freesurfer_completed.flag"
+        if not completion_flag.exists():
+            self.logger.warning(f"FreeSurfer not completed for {session_id}, skipping post-recon job")
+            return None
+
+        job_content = self._generate_post_recon_slurm_content(session, session_id, fs_subjects_dir, fs_output_dir)
+
+        job_file.write_text(job_content)
+        job_file.chmod(0o755)
+
+        self.logger.debug(f"Created post-recon job: {job_file}")
+        return job_file
+
     def create_pet_processing_job(self, session: SubjectSession) -> List[Path]:
         """
         Create SLURM jobs for PET processing
@@ -211,6 +245,96 @@ rm -rf $input_dir
 echo "FreeSurfer processing completed at: $(date)"
 """
 
+    def _generate_post_recon_slurm_content(self, session, session_id, fs_subjects_dir, fs_output_dir):
+        """Generate SLURM script content for post-recon processing only"""
+
+        # Additional modules based on config
+        additional_modules = self._get_additional_modules_script(session_id)
+
+        # Brainnetome atlas addition
+        brainnetome_section = self._get_brainnetome_script(session_id)
+
+        fs_config = self.config.slurm.freesurfer
+
+        # Build PET processing section if PET files exist
+        pet_processing = ""
+        if session.pet_files:
+            pet_processing = "\n# PET processing will be handled by separate PET jobs\n"
+
+        return f"""#!/bin/bash
+#SBATCH --job-name=PostRecon_{session_id[:12]}
+#SBATCH --output={self.config.output_dir}/jobs/{session_id}_post_recon_output.txt
+#SBATCH --error={self.config.output_dir}/jobs/{session_id}_post_recon_error.txt
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gpus={fs_config.get('gpus', 1)}
+#SBATCH --cpus-per-task={fs_config['cpus']}
+#SBATCH --mem={fs_config['memory']}
+#SBATCH --time={fs_config['time']}
+#SBATCH --account={self.config.slurm.account}
+#SBATCH --partition={self.config.slurm.partition}
+
+# Load required modules
+module load singularity
+
+# Set environment variables
+export FS_LICENSE={self.config.freesurfer_license}
+export FREESURFER_HOME="/usr/local/freesurfer/8.0.0-1"
+
+echo "Starting post-recon processing for {session_id}"
+echo "FreeSurfer output: {fs_output_dir}"
+echo "Started at: $(date)"
+
+# Check that FreeSurfer completed
+if [ ! -f "{fs_output_dir}/freesurfer_completed.flag" ]; then
+    echo "ERROR: FreeSurfer recon not completed for {session_id}"
+    echo "Missing flag: {fs_output_dir}/freesurfer_completed.flag"
+    exit 1
+fi
+
+echo "FreeSurfer recon confirmed completed"
+
+# Create post-recon processing script
+cat << 'EOF' > {fs_output_dir}/run_post_recon.sh
+#!/bin/bash
+
+# Source FreeSurfer environment
+. /usr/local/freesurfer/8.0.0-1/SetUpFreeSurfer.sh
+
+echo "=== Starting post-recon processing ==="
+echo "Subject: {session_id}"
+echo "Starting at: $(date)"
+{additional_modules}
+{brainnetome_section}
+echo "=== Post-recon processing completed at: $(date) ==="
+EOF
+
+chmod +x {fs_output_dir}/run_post_recon.sh
+
+# Run post-recon processing in singularity container
+singularity exec --nv \\
+  --env FREESURFER_HOME="/usr/local/freesurfer/8.0.0-1" \\
+  --env SUBJECTS_DIR="/output/" \\
+  -B {self.config.freesurfer_license}:/usr/local/freesurfer/8.0.0-1/license.txt \\
+  -B {fs_output_dir.parent}:/output/ \\
+  -B {self.config.brainnetome_dir}:/brainnetome_files/ \\
+  -B /scratch:/scratch \\
+  {self.config.container_path} \\
+  bash /output/{session_id}/run_post_recon.sh
+
+# Check completion status
+if [ $? -eq 0 ]; then
+    echo "SUCCESS: Post-recon processing completed for {session_id}"
+    touch {fs_output_dir}/post_recon_completed.flag
+else
+    echo "ERROR: Post-recon processing failed for {session_id}"
+    exit 1
+fi
+
+echo "Post-recon processing completed at: $(date)"
+{pet_processing}
+"""
+
     def _get_additional_modules_script(self, session_id: str) -> str:
         """Get script section for additional FreeSurfer modules"""
         if not self.config.run_additional_modules:
@@ -349,11 +473,11 @@ echo "PVC setup complete (Method: {pvc_method}, FWHM: {fwhm_str} mm)"
     # Create simple CSV format for PVC data
     echo 'Region,Mean_SUVR_PVC,Volume_mm3' > """ + f"{tracer}_DKT_stats_pvc.csv" + r"""
     tail -n +3 """ + f"{tracer}_DKT_ROI_stats_pvc.txt" + r""" | while read line; do
-        if [[ $line =~ ^[[:space:]]*[0-9] ]]; then
-            region=$(echo $line | awk '{print $5}')
-            volume=$(echo $line | awk '{print $4}')
-            mean_val=$(echo $line | awk '{print $6}')
-            echo "$region,$mean_val,$volume" >> """ + f"{tracer}_DKT_stats_pvc.csv" + r"""
+        if [[ $$line =~ ^[[:space:]]*[0-9] ]]; then
+            region=$$(echo $$line | awk '{print $$5}')
+            volume=$$(echo $$line | awk '{print $$4}')
+            mean_val=$$(echo $$line | awk '{print $$6}')
+            echo "$$region,$$mean_val,$$volume" >> """ + f"{tracer}_DKT_stats_pvc.csv" + r"""
         fi
     done
     
@@ -538,13 +662,13 @@ if [ "{tracer}" = "tau" ]; then
     # Calculate mean in reference region
     ref_val=$(mri_segstats --i {tracer}_pet_space-T1w.nii.gz \\
                           --seg cerebellum_ref_pet_space.nii.gz \\
-                          --id 1 --avgwf | tail -1 | awk '{{print $6}}')
-    
-    echo "Reference region value: $ref_val"
-    
+                          --id 1 --avgwf | tail -1 | awk '{{print $$6}}')
+
+    echo "Reference region value: $$ref_val"
+
     # Calculate SUVR
-    if [ $(echo "$ref_val > 0" | bc -l) -eq 1 ]; then
-        mri_calc -o {tracer}_SUVR.nii.gz {tracer}_pet_space-T1w.nii.gz div $ref_val
+    if [ $$(echo "$$ref_val > 0" | bc -l) -eq 1 ]; then
+        mri_calc -o {tracer}_SUVR.nii.gz {tracer}_pet_space-T1w.nii.gz div $$ref_val
         echo "SUVR calculation completed"
     else
         echo "WARNING: Invalid reference value, using raw PET values"
@@ -567,11 +691,11 @@ mri_segstats --i {tracer}_SUVR.nii.gz \\
 # Create simple CSV format
 echo "Region,Mean_SUVR,Volume_mm3" > {tracer}_DKT_stats.csv
 tail -n +3 {tracer}_DKT_ROI_stats.txt | while read line; do
-    if [[ $line =~ ^[[:space:]]*[0-9] ]]; then
-        region=$(echo $line | awk '{{print $5}}')
-        volume=$(echo $line | awk '{{print $4}}')
-        mean_val=$(echo $line | awk '{{print $6}}')
-        echo "$region,$mean_val,$volume" >> {tracer}_DKT_stats.csv
+    if [[ $$line =~ ^[[:space:]]*[0-9] ]]; then
+        region=$$(echo $$line | awk '{{print $$5}}')
+        volume=$$(echo $$line | awk '{{print $$4}}')
+        mean_val=$$(echo $$line | awk '{{print $$6}}')
+        echo "$$region,$$mean_val,$$volume" >> {tracer}_DKT_stats.csv
     fi
 done
 
