@@ -55,6 +55,7 @@ class PipelineConfig:
     resample_path: Optional[Path] = None
     
     # Processing options
+    structural_only: bool = False  # NEW: Process only MR data, skip PET
     max_age_difference: float = 5.0
     tracers: List[str] = field(default_factory=lambda: ['tau', 'pib'])
     force_reprocess: bool = False
@@ -108,7 +109,7 @@ class PipelineConfig:
             # Backward compatibility: single pet_dir
             self.pet_dirs = {'tau': Path(self.pet_dirs), 'pib': Path(self.pet_dirs)}
         else:
-            # Initialize empty dict if None
+            # Initialize empty dict if None (allowed in structural_only mode)
             self.pet_dirs = {}
         
         # Convert optional paths
@@ -141,20 +142,36 @@ class PipelineConfig:
         if not self.bids_dir.exists():
             errors.append(f"BIDS directory not found: {self.bids_dir}")
         
-        # Check PET directories (at least one tracer directory should be specified)
-        if not self.pet_dirs:
-            errors.append("No PET directories specified. Please configure at least one tracer directory (tau or pib)")
-        else:
-            found_valid_pet_dir = False
-            for tracer, path in self.pet_dirs.items():
-                if path is not None:
-                    if not path.exists():
-                        errors.append(f"PET directory for {tracer} not found: {path}")
-                    else:
-                        found_valid_pet_dir = True
+        # PET validation depends on structural_only mode
+        if not self.structural_only:
+            # Check PET directories (at least one tracer directory should be specified)
+            if not self.pet_dirs:
+                errors.append("No PET directories specified. Please configure at least one tracer directory (tau or pib) or set structural_only: true")
+            else:
+                found_valid_pet_dir = False
+                for tracer, path in self.pet_dirs.items():
+                    if path is not None:
+                        if not path.exists():
+                            errors.append(f"PET directory for {tracer} not found: {path}")
+                        else:
+                            found_valid_pet_dir = True
+                
+                if not found_valid_pet_dir:
+                    errors.append("No valid PET directories found. At least one PET directory must exist or set structural_only: true")
             
-            if not found_valid_pet_dir:
-                errors.append("No valid PET directories found. At least one PET directory must exist")
+            # Validate tracers match configured directories
+            valid_tracers = set(self.pet_dirs.keys())
+            invalid = set(self.tracers) - valid_tracers
+            if invalid:
+                errors.append(f"Tracers {invalid} specified but no corresponding PET directory configured")
+            
+            # Check that specified tracers have valid directories
+            for tracer in self.tracers:
+                if tracer not in self.pet_dirs or self.pet_dirs[tracer] is None:
+                    errors.append(f"Tracer '{tracer}' specified in tracers list but no directory configured")
+        else:
+            # In structural_only mode, PET directories are optional
+            pass
         
         if not self.container_path.exists():
             errors.append(f"Container not found: {self.container_path}")
@@ -184,17 +201,6 @@ class PipelineConfig:
                 import os
                 if not os.access(self.petpvc_path, os.X_OK):
                     errors.append(f"PETPVC path exists but is not executable: {self.petpvc_path}")
-        
-        # Validate tracers match configured directories
-        valid_tracers = set(self.pet_dirs.keys())
-        invalid = set(self.tracers) - valid_tracers
-        if invalid:
-            errors.append(f"Tracers {invalid} specified but no corresponding PET directory configured")
-        
-        # Check that specified tracers have valid directories
-        for tracer in self.tracers:
-            if tracer not in self.pet_dirs or self.pet_dirs[tracer] is None:
-                errors.append(f"Tracer '{tracer}' specified in tracers list but no directory configured")
         
         # Validate age range
         if self.validation['min_age'] >= self.validation['max_age']:

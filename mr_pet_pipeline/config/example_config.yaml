@@ -6,16 +6,17 @@
 # =============================================================================
 
 # Input data directories (BIDS format)
-bids_dir: "/isilon/datalake/riipl/scratch/pipeline/DAMA_PIPELINE_TEST/ADRC/"
+#bids_dir: "/isilon/datalake/riipl/scratch/pipeline/RIIPL_ADSP_pipeline/ADRC/"
+bids_dir: "/isilon/datalake/dma_research/original/WisconsinADRC/GLOBUS/2023-11-30_Imaging_Freeze/ADRC/MRI/MRI/"
 
 # PET directories by tracer type (each is optional)
-# Set to null to disable a tracer
+# Set to null to disable a tracer or use structural_only mode
 pet_dirs:
-  tau: "/isilon/datalake/riipl/scratch/pipeline/DAMA_PIPELINE_TEST/ADRC_TAU/"
-  pib: "/isilon/datalake/riipl/scratch/pipeline/DAMA_PIPELINE_TEST/ADRC_PIB/"
+  tau: null
+  pib: null
 
 # Output directory
-output_dir: "/isilon/datalake/riipl/scratch/pipeline/DAMA_PIPELINE_TEST/ADRC/derivatives/pipeline"
+output_dir: "/isilon/datalake/riipl/scratch/pipeline/RIIPL_ADSP_pipeline/ADRC/derivatives/pipeline"
 
 # FreeSurfer container and license (REQUIRED)
 container_path: "/isilon/datalake/riipl/original/DEMONco/riipl_recon-all-clinical/freesurfer8.0_enhanced.sif"
@@ -26,7 +27,7 @@ freesurfer_license: "~/freesurfer_license.txt"
 # =============================================================================
 
 # Brainnetome atlas for enhanced parcellation (optional)
-brainnetome_dir: "/isilon/datalake/riipl/scratch/pipeline/DAMA_PIPELINE_TEST/BN_Atlas_freesurfer/"
+brainnetome_dir: "/isilon/datalake/riipl/scratch/pipeline/RIIPL_ADSP_pipeline/BN_Atlas_freesurfer/"
 
 # Advanced analysis tools (set to null to disable)
 atlas_template_path: null
@@ -40,17 +41,21 @@ matlab_module: "matlab/2024b"  # Module to load for MATLAB scripts
 # PROCESSING SETTINGS
 # =============================================================================
 
-# Session matching
+# NEW: Structural processing only mode
+structural_only: true           # If true, only process MR data (no PET matching/processing)
+
+# Session matching (only used if structural_only: false)
 max_age_difference: 5.0          # Maximum age difference for MR-PET matching
 
 # Tracers to process (must have corresponding pet_dirs entries)
+# Ignored if structural_only: true
 tracers: ["tau", "pib"]           # Can be ["tau"], ["pib"], or ["tau", "pib"]
 
 # Processing features
-force_reprocess: false 
-run_additional_modules: true     # WMH, hypothalamic, hippocampal modules
-run_brainnetome: true           # Add Brainnetome atlas
-run_pvc: false                  # Partial volume correction (requires petpvc_path)
+force_reprocess: false            # If false, skip sessions with existing completed recons
+run_additional_modules: true      # WMH, hypothalamic, hippocampal modules
+run_brainnetome: true            # Add Brainnetome atlas
+run_pvc: false                   # Partial volume correction (requires petpvc_path)
 
 # =============================================================================
 # SLURM CONFIGURATION
@@ -107,19 +112,26 @@ validation:
 # EXAMPLE CONFIGURATIONS
 # =============================================================================
 
-# Example 1: Only process TAU PET
+# Example 1: Structural processing only (no PET)
+# structural_only: true
+# This will process all MR sessions without requiring PET data
+
+# Example 2: Only process TAU PET
+# structural_only: false
 # pet_dirs:
 #   tau: "/path/to/tau/"
 #   pib: null
 # tracers: ["tau"]
 
-# Example 2: Only process PIB PET
+# Example 3: Only process PIB PET
+# structural_only: false
 # pet_dirs:
 #   tau: null
 #   pib: "/path/to/pib/"
 # tracers: ["pib"]
 
-# Example 3: Process both (as shown above)
+# Example 4: Process both (as shown above)
+# structural_only: false
 # pet_dirs:
 #   tau: "/path/to/tau/"
 #   pib: "/path/to/pib/"
