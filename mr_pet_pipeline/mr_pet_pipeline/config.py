@@ -42,6 +42,7 @@ class PipelineConfig:
     # Tool paths (required)
     container_path: Path
     freesurfer_license: Path
+    freesurfer_home: str = "/usr/local/freesurfer/8.0.0-1"  # Path to FreeSurfer installation
     
     # Optional tool paths
     brainnetome_dir: Optional[Path] = None

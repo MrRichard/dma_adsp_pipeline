@@ -6,3 +6,5 @@ pytz==2025.2
 PyYAML==6.0.2
 six==1.17.0
 tzdata==2025.2
+nibabel>=6.0.0
+matplotlib>=3.0

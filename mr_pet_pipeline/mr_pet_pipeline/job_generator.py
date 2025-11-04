@@ -455,11 +455,13 @@ echo "PVC setup complete (Method: {pvc_method}, FWHM: {fwhm_str} mm)"
         # Determine if we should run PVC
         run_pvc = self.config.run_pvc
         petpvc_container = getattr(self.config, 'petpvc_container', None)
+        # Path to QC overlay generation script
+        qc_script = Path(__file__).parent.parent / 'scripts' / 'qc_pet_overlay.py'
         
         # PVC execution block (runs in host, using separate PETPVC container)
         # NOTE: Using raw string to avoid escape sequence warnings
         pvc_execution = ""
-        if run_pvc and petpvc_container:
+        if run_pvc:
             # Build the bash script separately to avoid escape issues
             pvc_stats_script = r"""
     cd /output
@@ -643,6 +645,17 @@ mri_vol2vol \\
 
 echo "QC images created"
 
+# Compress intermediate PET volume to save space
+gzip mean_{tracer}_on_MR.nii
+
+# Generate PNG QC overlays using Python script
+python {qc_script} \
+    --pet-nifti qc/{tracer}_pet_on_T1w.nii.gz \
+    --t1-mgz /fs_subjects/{session_id}/mri/T1.mgz \
+    --out-dir qc \
+    --tracer {tracer} \
+    --session-id {session_id}
+
 # Step 4: Basic SUVR calculation (if this is tau, use cerebellar reference)
 if [ "{tracer}" = "tau" ]; then
     echo "=== Calculating tau SUVR ==="
@@ -685,8 +698,7 @@ echo "=== Extracting ROI statistics (Raw) ==="
 # Generate statistics for DKT atlas regions
 mri_segstats --i {tracer}_SUVR.nii.gz \\
              --seg /fs_subjects/{session_id}/mri/aparc+aseg.mgz \\
-             --ctab /usr/local/freesurfer/8.0.0-1/FreeSurferColorLUT.txt \\
-             --sum {tracer}_DKT_ROI_stats.txt
+                              --ctab {freesurfer_home}/FreeSurferColorLUT.txt \\             --sum {tracer}_DKT_ROI_stats.txt
 
 # Create simple CSV format
 echo "Region,Mean_SUVR,Volume_mm3" > {tracer}_DKT_stats.csv
@@ -724,6 +736,20 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "FreeSurfer container processing completed successfully"
+
+# Generate QC overlay PNG images using external script
+echo "Generating QC overlay PNG images..."
+python {qc_script} \
+    --pet-nifti $OUTPUT_DIR/qc/{tracer}_pet_on_T1w.nii.gz \
+    --t1-mgz /fs_subjects/{session_id}/mri/T1.mgz \
+    --out-dir $OUTPUT_DIR/qc \
+    --tracer {tracer} \
+    --session-id {session_id}
+if [ $? -ne 0 ]; then
+    echo "ERROR: QC overlay script failed"
+    exit 1
+fi
+
 {pvc_execution}
 # Final completion check
 if [ $? -eq 0 ]; then

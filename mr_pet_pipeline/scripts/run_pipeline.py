@@ -70,12 +70,33 @@ Examples:
         action='store_true',
         help='Generate PET processing jobs only (no FreeSurfer recon jobs). Requires completed FreeSurfer recons.'
     )
+    parser.add_argument(
+        '--all-structurals',
+        action='store_true',
+        help='Include all structural reconstructions and skip PET matching (use with --post-recon to re-run post-recon steps on all completed sessions)'
+    )
+    parser.add_argument(
+        '--incomplete-recon-only',
+        action='store_true',
+        help='Select only incomplete or missing FreeSurfer reconstructions; remove any existing outputs and restart recon-all with post-processing'
+    )
+    parser.add_argument(
+        '--run-structurals-only',
+        action='store_true',
+        help='Run only structural processing, ignoring config file settings for PET'
+    )
 
     args = parser.parse_args()
 
     # Check for mutually exclusive flags
     if args.post_recon and args.pet_only:
         print("Error: --post-recon and --pet-only are mutually exclusive")
+        return 1
+    if args.all_structurals and not args.post_recon:
+        print("Error: --all-structurals must be used with --post-recon")
+        return 1
+    if args.incomplete_recon_only and (args.post_recon or args.pet_only):
+        print("Error: --incomplete-recon-only cannot be combined with --post-recon or --pet-only")
         return 1
 
     # Check if config file exists
@@ -91,6 +112,11 @@ Examples:
         # Update logging level if verbose
         if args.verbose:
             config.logging['level'] = 'DEBUG'
+        
+        # Override config if structurals-only flag is set
+        if args.run_structurals_only:
+            config.structural_only = True
+            print("Running in structural-only mode due to --run-structurals-only flag")
         
         # Validate configuration
         errors = config.validate()
@@ -116,7 +142,9 @@ Examples:
         print("\nRunning pipeline setup...")
         job_files = orchestrator.run_pipeline(
             post_recon_only=args.post_recon,
-            pet_only=args.pet_only
+            pet_only=args.pet_only,
+            all_structurals=args.all_structurals,
+            incomplete_only=args.incomplete_recon_only
         )
         
         # Print summary

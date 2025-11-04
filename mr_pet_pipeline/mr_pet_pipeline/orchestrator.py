@@ -2,6 +2,7 @@
 Main orchestrator for MR-PET processing pipeline
 """
 import logging
+import shutil
 import json
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -46,7 +47,13 @@ class PipelineOrchestrator:
         
         return logging.getLogger(__name__)
     
-    def run_pipeline(self, post_recon_only: bool = False, pet_only: bool = False) -> Dict[str, List[Path]]:
+    def run_pipeline(
+        self,
+        post_recon_only: bool = False,
+        pet_only: bool = False,
+        all_structurals: bool = False,
+        incomplete_only: bool = False,
+    ) -> Dict[str, List[Path]]:
         """
         Run the complete MR-PET processing pipeline
 
@@ -58,249 +65,216 @@ class PipelineOrchestrator:
             Dictionary of job files by category
         """
         self.logger.info("=" * 80)
-        if post_recon_only:
-            self.logger.info("Starting MR-PET Pipeline (POST-RECON MODE)")
-        elif pet_only:
-            self.logger.info("Starting MR-PET Pipeline (PET-ONLY MODE)")
-        elif self.config.structural_only:
-            self.logger.info("Starting MR Processing Pipeline (STRUCTURAL ONLY MODE)")
-        else:
-            self.logger.info("Starting MR-PET Processing Pipeline")
+        mode_log = {
+            (True, False, False): "Starting MR-PET Pipeline (POST-RECON MODE)",
+            (False, True, False): "Starting MR-PET Pipeline (PET-ONLY MODE)",
+            (False, False, True): "Starting MR Processing Pipeline (STRUCTURAL ONLY MODE)",
+        }.get((post_recon_only, pet_only, self.config.structural_only), "Starting MR-PET Processing Pipeline")
+        self.logger.info(mode_log)
         self.logger.info("=" * 80)
-        
+
         # Validate inputs
         self.logger.info("Step 0: Validating configuration")
         self._validate_inputs()
-        
+
         # Step 1: Parse BIDS dataset
         self.logger.info("Step 1: Parsing BIDS dataset for MR sessions")
         require_flair = self.config.validation.get('require_flair', False)
         mr_sessions = self.bids_parser.find_mr_sessions(require_flair=require_flair)
-        
+
         if not mr_sessions:
             raise ValueError("No MR sessions found in BIDS directory")
-        
-        # Determine final sessions to process
-        if self.config.structural_only:
-            # Structural only mode: use all MR sessions
-            self.logger.info("Running in structural-only mode - skipping PET matching")
+
+        # Determine which sessions to use based on mode
+        if self.config.structural_only or all_structurals or incomplete_only:
+            self.logger.info("Skipping PET matching - including all MR structural sessions")
             matched_sessions = mr_sessions
         else:
-            # Standard mode: match with PET
-            # Step 2: Find PET sessions
+            # Standard mode: find and match PET sessions
             self.logger.info("Step 2: Finding PET sessions")
             pet_sessions = self.bids_parser.find_pet_sessions(self.config.tracers)
-            
-            # Check if any PET sessions found
-            total_pet = sum(len(sessions) for sessions in pet_sessions.values())
-            if total_pet == 0:
+            if not any(pet_sessions.values()):
                 raise ValueError("No PET sessions found")
-            
-            # Step 3: Match sessions
             self.logger.info("Step 3: Matching MR and PET sessions")
             matched_sessions = self.session_matcher.match_sessions(mr_sessions, pet_sessions)
-            
             if not matched_sessions:
                 raise ValueError("No matching sessions found between MR and PET data")
         
-        # Step 4: Check for existing FreeSurfer recons
-        self.logger.info("Step 4: Checking for existing FreeSurfer recons")
-        sessions_to_process = self._filter_existing_recons(matched_sessions, post_recon_only, pet_only)
+        # Step 4: Filter sessions based on processing status
+        self.logger.info("Step 4: Filtering sessions based on processing status")
+        sessions_to_process = self._filter_sessions_for_processing(
+            matched_sessions, post_recon_only, pet_only, incomplete_only
+        )
 
         if not sessions_to_process:
-            if post_recon_only:
-                self.logger.warning("No sessions with completed FreeSurfer recons found for post-recon processing.")
-            elif pet_only:
-                self.logger.warning("No sessions with completed FreeSurfer recons found for PET-only processing.")
-            else:
-                self.logger.warning("All sessions have completed FreeSurfer recons. No new jobs to generate.")
-                self.logger.info("Use force_reprocess: true in config to reprocess existing sessions")
+            self.logger.warning("No sessions found that meet the criteria for processing.")
             return {'freesurfer': [], 'pet': [], 'post_recon': []}
-        
+
         # Step 5: Generate processing jobs
         self.logger.info("Step 5: Generating SLURM jobs")
-        job_files = self._generate_all_jobs(sessions_to_process, post_recon_only, pet_only)
+        jobs_by_session = self._generate_all_jobs(
+            sessions_to_process, post_recon_only, pet_only, incomplete_only
+        )
         
         # Step 6: Create submission script
         self.logger.info("Step 6: Creating job submission script")
-        submission_script = self._create_submission_script(job_files)
-        
+        submission_script = self._create_submission_script(jobs_by_session)
+
         # Step 7: Generate summary report
         self.logger.info("Step 7: Generating summary report")
-        self._generate_summary_report(matched_sessions, sessions_to_process, job_files)
+        all_job_files = {
+            'freesurfer': [job for jobs in jobs_by_session.values() for job in jobs.get('freesurfer', [])],
+            'pet': [job for jobs in jobs_by_session.values() for job in jobs.get('pet', [])],
+            'post_recon': [job for jobs in jobs_by_session.values() for job in jobs.get('post_recon', [])],
+        }
+        self._generate_summary_report(matched_sessions, sessions_to_process, all_job_files)
         
         self.logger.info("=" * 80)
         self.logger.info("Pipeline setup completed successfully")
-        self.logger.info(f"Total jobs created: {len(job_files['freesurfer']) + len(job_files['pet'])}")
+        total_jobs = sum(len(j) for j in all_job_files.values())
+        self.logger.info(f"Total jobs created: {total_jobs}")
         if submission_script:
             self.logger.info(f"Submission script: {submission_script}")
         self.logger.info("=" * 80)
         
-        return job_files
-    
+        return all_job_files
+
     def _validate_inputs(self):
         """Validate all required paths and dependencies"""
         errors = self.config.validate()
-        
         if errors:
-            error_msg = "Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors)
-            raise ValueError(error_msg)
-        
+            raise ValueError("Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
         self.logger.info("Input validation completed successfully")
-    
-    def _filter_existing_recons(self, sessions: List[SubjectSession],
-                                post_recon_only: bool = False,
-                                pet_only: bool = False) -> List[SubjectSession]:
-        """
-        Filter sessions based on FreeSurfer recon status
 
-        Args:
-            sessions: List of all sessions
-            post_recon_only: If True, only return sessions WITH completed recons
-            pet_only: If True, only return sessions WITH completed recons
-
-        Returns:
-            List of sessions that need processing
-        """
-        sessions_to_process = []
-        skipped_sessions = []
-
+    def _filter_sessions_for_processing(
+        self,
+        sessions: List[SubjectSession],
+        post_recon_only: bool,
+        pet_only: bool,
+        incomplete_only: bool,
+    ) -> List[SubjectSession]:
+        """Filter sessions based on recon status and processing mode."""
         fs_subjects_dir = self.config.output_dir / "freesurfer"
+        sessions_to_process = []
+        skipped_sessions = 0
 
         for session in sessions:
             session_id = session.get_session_id()
             fs_output_dir = fs_subjects_dir / session_id
             completion_flag = fs_output_dir / "freesurfer_completed.flag"
-
-            # Check if FreeSurfer has been completed
             recon_completed = completion_flag.exists()
 
+            if incomplete_only:
+                if not recon_completed:
+                    self.logger.info(f"  Incomplete recon, scheduling: {session_id}")
+                    if fs_output_dir.exists():
+                        self.logger.info(f"  Removing existing incomplete directory: {fs_output_dir}")
+                        shutil.rmtree(fs_output_dir)
+                    sessions_to_process.append(session)
+                else:
+                    skipped_sessions += 1
+                continue
+
             if post_recon_only or pet_only:
-                # For post-recon or PET-only modes, we ONLY process sessions with completed recons
                 if recon_completed:
-                    self.logger.info(f"  ✓ Found completed recon: {session_id}")
                     sessions_to_process.append(session)
                 else:
-                    self.logger.info(f"  ✗ Skipping {session_id} - FreeSurfer recon not completed")
-                    skipped_sessions.append(session)
+                    self.logger.info(f"  Skipping {session_id} - FreeSurfer recon not completed")
+                    skipped_sessions += 1
             else:
-                # Normal mode: skip completed recons unless force_reprocess
                 if recon_completed and not self.config.force_reprocess:
-                    self.logger.info(f"  ✓ Skipping {session_id} - FreeSurfer recon already completed")
-                    skipped_sessions.append(session)
+                    self.logger.info(f"  Skipping {session_id} - recon already completed")
+                    skipped_sessions += 1
                 else:
-                    if fs_output_dir.exists() and self.config.force_reprocess:
-                        self.logger.info(f"  ! Will reprocess {session_id} (force_reprocess=true)")
+                    if recon_completed and self.config.force_reprocess:
+                        self.logger.info(f"  Reprocessing {session_id} (force_reprocess=true)")
                     sessions_to_process.append(session)
-
+        
         self.logger.info(f"Sessions to process: {len(sessions_to_process)}")
-        self.logger.info(f"Sessions skipped: {len(skipped_sessions)}")
-
+        self.logger.info(f"Sessions skipped: {skipped_sessions}")
         return sessions_to_process
-    
-    def _generate_all_jobs(self, matched_sessions: List[SubjectSession],
-                          post_recon_only: bool = False,
-                          pet_only: bool = False) -> Dict[str, List[Path]]:
-        """Generate all SLURM job files"""
-        job_files = {
-            'freesurfer': [],
-            'pet': [],
-            'post_recon': []
-        }
 
-        for session in matched_sessions:
-            # Set output directory for session (simplified structure)
-            session.output_dir = self.config.output_dir / session.get_session_id()
+    def _generate_all_jobs(
+        self, 
+        sessions_to_process: List[SubjectSession],
+        post_recon_only: bool,
+        pet_only: bool,
+        incomplete_only: bool
+    ) -> Dict[str, Dict[str, List[Path]]]:
+        """Generate all SLURM job files, organized by session."""
+        jobs_by_session = {}
+
+        for session in sessions_to_process:
+            session_id = session.get_session_id()
+            jobs_by_session[session_id] = {'freesurfer': [], 'pet': [], 'post_recon': []}
+            
+            session.output_dir = self.config.output_dir / session_id
             session.output_dir.mkdir(parents=True, exist_ok=True)
-
-            if post_recon_only:
-                # Generate post-recon job (additional modules + Brainnetome + PET)
-                post_recon_job = self.job_generator.create_post_recon_job(session)
-                job_files['post_recon'].append(post_recon_job)
-            elif pet_only:
-                # Generate PET jobs only
+            
+            mode_flags = (post_recon_only, pet_only, self.config.structural_only, incomplete_only)
+            
+            if any(mode_flags):
+                if post_recon_only:
+                    job = self.job_generator.create_post_recon_job(session)
+                    jobs_by_session[session_id]['post_recon'].append(job)
+                elif pet_only and session.pet_files:
+                    jobs = self.job_generator.create_pet_processing_job(session)
+                    jobs_by_session[session_id]['pet'].extend(jobs)
+                elif incomplete_only or self.config.structural_only:
+                    job = self.job_generator.create_freesurfer_job(session)
+                    jobs_by_session[session_id]['freesurfer'].append(job)
+            else:
+                # Normal mode
+                fs_job = self.job_generator.create_freesurfer_job(session)
+                jobs_by_session[session_id]['freesurfer'].append(fs_job)
                 if session.pet_files:
                     pet_jobs = self.job_generator.create_pet_processing_job(session)
-                    job_files['pet'].extend(pet_jobs)
-            else:
-                # Normal mode: Generate FreeSurfer job
-                fs_job = self.job_generator.create_freesurfer_job(session)
-                job_files['freesurfer'].append(fs_job)
+                    jobs_by_session[session_id]['pet'].extend(pet_jobs)
 
-                # Generate PET jobs if PET files exist and not in structural_only mode
-                if not self.config.structural_only and session.pet_files:
-                    pet_jobs = self.job_generator.create_pet_processing_job(session)
-                    job_files['pet'].extend(pet_jobs)
+        return jobs_by_session
 
-        if post_recon_only:
-            self.logger.info(f"Created {len(job_files['post_recon'])} post-recon jobs")
-        elif pet_only:
-            self.logger.info(f"Created {len(job_files['pet'])} PET-only jobs")
-        else:
-            self.logger.info(f"Created {len(job_files['freesurfer'])} FreeSurfer jobs")
-            if not self.config.structural_only:
-                self.logger.info(f"Created {len(job_files['pet'])} PET processing jobs")
-
-        return job_files
-    
-    def _create_submission_script(self, job_files: Dict[str, List[Path]]) -> Optional[Path]:
-        """Create script to submit all jobs (without automatic dependencies as requested)"""
-        total_jobs = len(job_files.get('freesurfer', [])) + len(job_files.get('pet', [])) + len(job_files.get('post_recon', []))
-        if total_jobs == 0:
+    def _create_submission_script(self, jobs_by_session: Dict[str, Dict[str, List[Path]]]) -> Optional[Path]:
+        """Create a script to submit all jobs with proper dependencies."""
+        if not any(jobs_by_session.values()):
             self.logger.info("No jobs to submit - skipping submission script creation")
             return None
-        
+
         script_path = self.config.output_dir / "submit_all_jobs.sh"
-
-        # Determine mode for header
-        mode = "POST-RECON" if job_files.get('post_recon') else ("PET-ONLY" if (job_files.get('pet') and not job_files.get('freesurfer')) else "FULL")
-
         script_content = f"""#!/bin/bash
 # MR-PET Pipeline Job Submission Script
 # Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-# Mode: {mode}
-# NOTE: Jobs must be run manually in the order you want them
-
-echo "Job submission script for {mode} mode"
+echo "Submitting all jobs with dependencies..."
 echo "="*60
-"""
 
-        # Add FreeSurfer jobs
-        if job_files.get('freesurfer'):
-            script_content += f"""
-echo "FreeSurfer jobs ({len(job_files['freesurfer'])}):"
 """
-            for fs_job in job_files['freesurfer']:
-                session_id = '_'.join(fs_job.stem.split('_')[:2])
-                script_content += f'echo "  sbatch {fs_job}  # {session_id}"\n'
+        for session_id, jobs in jobs_by_session.items():
+            fs_job = jobs.get('freesurfer', [])[0] if jobs.get('freesurfer') else None
+            pet_jobs = jobs.get('pet', [])
+            post_recon_job = jobs.get('post_recon', [])[0] if jobs.get('post_recon') else None
+            
+            script_content += f"# Session: {session_id}\n"
 
-        # Add post-recon jobs
-        if job_files.get('post_recon'):
-            script_content += f"""
-echo ""
-echo "Post-recon jobs ({len(job_files['post_recon'])}):"
-"""
-            for pr_job in job_files['post_recon']:
-                session_id = '_'.join(pr_job.stem.split('_')[:2])
-                script_content += f'echo "  sbatch {pr_job}  # {session_id}"\n'
+            # Handle job submission logic based on job type
+            if fs_job:
+                script_content += f"FS_JOB_ID=$(sbatch --parsable {fs_job})\n"
+                script_content += f"echo 'Submitted FreeSurfer job for {session_id}: $FS_JOB_ID'\n"
+                if pet_jobs:
+                    for pet_job in pet_jobs:
+                        script_content += f"PET_JOB_ID=$(sbatch --parsable --dependency=afterok:$FS_JOB_ID {pet_job})\n"
+                        script_content += f"echo '  - Submitted PET job dependent on $FS_JOB_ID: $PET_JOB_ID'\n"
+            elif post_recon_job:
+                script_content += f"POST_RECON_JOB_ID=$(sbatch --parsable {post_recon_job})\n"
+                script_content += f"echo 'Submitted Post-Recon job for {session_id}: $POST_RECON_JOB_ID'\n"
+            elif pet_jobs: # PET-only mode
+                for pet_job in pet_jobs:
+                    script_content += f"PET_JOB_ID=$(sbatch --parsable {pet_job})\n"
+                    script_content += f"echo 'Submitted PET-only job for {session_id}: $PET_JOB_ID'\n"
 
-        # Add PET jobs
-        if job_files.get('pet'):
-            script_content += f"""
-echo ""
-echo "PET processing jobs ({len(job_files['pet'])}):"
-"""
-            for pet_job in job_files['pet']:
-                parts = pet_job.stem.split('_')
-                session_id = f"{parts[0]}_{parts[1]}"
-                tracer = parts[2] if len(parts) > 2 else "pet"
-                script_content += f'echo "  sbatch {pet_job}  # {session_id} - {tracer.upper()}"\n'
+            script_content += "\n"
 
         script_content += f"""
-echo ""
 echo "="*60
-echo "NOTE: These jobs are listed for reference."
-echo "Submit them manually in the order you prefer."
+echo "All jobs submitted."
 echo "Monitor job status with: squeue -u $USER"
 echo "Check logs in: {self.config.output_dir}/jobs/"
 """
