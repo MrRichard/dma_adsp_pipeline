@@ -43,6 +43,7 @@ class PipelineConfig:
     container_path: Path
     freesurfer_license: Path
     freesurfer_home: str = "/usr/local/freesurfer/8.0.0-1"  # Path to FreeSurfer installation
+    python_venv_path: Optional[Path] = None
     
     # Optional tool paths
     brainnetome_dir: Optional[Path] = None
@@ -104,6 +105,9 @@ class PipelineConfig:
         self.container_path = Path(self.container_path)
         self.freesurfer_license = Path(self.freesurfer_license).expanduser()
         
+        if self.python_venv_path:
+            self.python_venv_path = Path(self.python_venv_path)
+
         # Handle PET directories (can be dict or single path for backward compatibility)
         if isinstance(self.pet_dirs, dict):
             # Convert each PET directory path
@@ -151,6 +155,11 @@ class PipelineConfig:
         
         # PET validation depends on structural_only mode
         if not self.structural_only:
+            if not self.python_venv_path:
+                errors.append("python_venv_path must be specified when running PET processing.")
+            elif not self.python_venv_path.exists():
+                errors.append(f"Python venv path not found: {self.python_venv_path}")
+
             # Check PET directories (at least one tracer directory should be specified)
             if not self.pet_dirs:
                 errors.append("No PET directories specified. Please configure at least one tracer directory (tau or pib) or set structural_only: true")

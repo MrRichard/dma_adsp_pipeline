@@ -631,30 +631,8 @@ fi
 
 echo "Coregistered PET created successfully"
 
-# Step 3: Create QC overlay images
-echo "Creating QC images..."
-mkdir -p qc
-
-# Generate QC overlay (PET on T1w for visual inspection)
-mri_vol2vol \\
-  --mov mean_{tracer}_on_MR.nii \\
-  --targ /fs_subjects/{session_id}/mri/T1.mgz \\
-  --reg {tracer}_pet_to_T1w.lta \\
-  --o qc/{tracer}_pet_on_T1w.nii.gz \\
-  --no-save-reg
-
-echo "QC images created"
-
-# Compress intermediate PET volume to save space
+# Step 3: Compress intermediate PET volume to save space
 gzip mean_{tracer}_on_MR.nii
-
-# Generate PNG QC overlays using Python script
-python {qc_script} \
-    --pet-nifti qc/{tracer}_pet_on_T1w.nii.gz \
-    --t1-mgz /fs_subjects/{session_id}/mri/T1.mgz \
-    --out-dir qc \
-    --tracer {tracer} \
-    --session-id {session_id}
 
 # Step 4: Basic SUVR calculation (if this is tau, use cerebellar reference)
 if [ "{tracer}" = "tau" ]; then
@@ -737,18 +715,84 @@ fi
 
 echo "FreeSurfer container processing completed successfully"
 
-# Generate QC overlay PNG images using external script
-echo "Generating QC overlay PNG images..."
-python {qc_script} \
-    --pet-nifti $OUTPUT_DIR/qc/{tracer}_pet_on_T1w.nii.gz \
-    --t1-mgz /fs_subjects/{session_id}/mri/T1.mgz \
-    --out-dir $OUTPUT_DIR/qc \
-    --tracer {tracer} \
-    --session-id {session_id}
-if [ $? -ne 0 ]; then
-    echo "ERROR: QC overlay script failed"
+# New enhanced QC generation
+echo ""
+echo "=== Generating QC Mosaic Images ==="
+
+# Activate python environment
+if [ -z "{self.config.python_venv_path}" ]; then
+    echo "ERROR: python_venv_path is not set in the config. Cannot generate QC images."
     exit 1
 fi
+echo "Activating Python venv: {self.config.python_venv_path}"
+source "{self.config.python_venv_path}/bin/activate"
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to activate Python virtual environment"
+    exit 1
+fi
+
+# Define paths for QC generation
+T1_IMAGE=$FS_DIR/mri/T1.mgz
+REG_PET_IMG=$OUTPUT_DIR/{tracer}_pet_space-T1w.nii.gz
+SUVR_IMG=$OUTPUT_DIR/{tracer}_SUVR.nii.gz
+GM_MASK_IMG=$OUTPUT_DIR/qc/gm_mask_T1_space.nii.gz
+QC_SCRIPT_PATH={str(Path(__file__).parent.parent.parent / 'scripts' / 'create_qc_mosaics.py')}
+
+# Create GM mask for QC using the FreeSurfer container
+echo "Creating GM mask for QC..."
+singularity exec --nv \\
+  -B $FS_DIR:/fs_subjects/{session_id} \\
+  -B $OUTPUT_DIR/qc:/output_qc \\
+  {self.config.container_path} \\
+  bash -c "mri_binarize --i /fs_subjects/{session_id}/mri/aparc+aseg.mgz --match 3 --match 42 --o /output_qc/gm_mask.mgz && mri_convert /output_qc/gm_mask.mgz /output_qc/gm_mask_T1_space.nii.gz"
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to create GM mask"
+    # We can continue to generate other QC images
+fi
+
+# QC 1: Registration
+if [ -f "$REG_PET_IMG" ]; then
+    echo "Generating registration QC..."
+    python $QC_SCRIPT_PATH \\
+        --base $T1_IMAGE \\
+        --overlay $REG_PET_IMG \\
+        --output $OUTPUT_DIR/qc/{session_id}_{tracer}_registration_qc.png \\
+        --title "{session_id} - {tracer.upper()} Registration"
+else
+    echo "WARNING: Registered PET not found, skipping registration QC: $REG_PET_IMG"
+fi
+
+# QC 2: GM Segmentation
+if [ -f "$GM_MASK_IMG" ]; then
+    echo "Generating GM segmentation QC..."
+    python $QC_SCRIPT_PATH \\
+        --base $T1_IMAGE \\
+        --overlay $GM_MASK_IMG \\
+        --output $OUTPUT_DIR/qc/{session_id}_{tracer}_gm_segmentation_qc.png \\
+        --title "{session_id} - GM Segmentation"
+else
+    echo "WARNING: GM mask not found, skipping GM QC: $GM_MASK_IMG"
+fi
+
+# QC 3: SUVR Map
+if [ -f "$SUVR_IMG" ]; then
+    echo "Generating SUVR map QC..."
+    python $QC_SCRIPT_PATH \\
+        --base $T1_IMAGE \\
+        --overlay $SUVR_IMG \\
+        --output $OUTPUT_DIR/qc/{session_id}_{tracer}_suvr_map_qc.png \\
+        --title "{session_id} - {tracer.upper()} SUVR Map"
+else
+    echo "WARNING: SUVR map not found, skipping SUVR QC: $SUVR_IMG"
+fi
+
+# Deactivate venv
+deactivate
+echo "QC generation complete."
+
+
+
 
 {pvc_execution}
 # Final completion check

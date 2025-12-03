@@ -7,3 +7,5 @@ pipeline/
 __pycache__/
 *.egg-info/
 mr_pet_pipeline/config/config.yaml
+GEMINI.md
+.DS_Store
