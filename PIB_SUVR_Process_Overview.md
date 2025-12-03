@@ -43,7 +43,11 @@ The process is executed within a Singularity container environment, leveraging t
     3. This process is **repeated** for the **PVC-corrected** `pib_SUVR_pvc.nii.gz` image, generating `pib_DKT_stats_pvc.csv`.
 
 ### Step 6: Quality Control (QC)
-- **Goal**: Generate images to visually inspect the quality of the processing.
+- **Goal**: Generate a comprehensive set of mosaic images to visually inspect the quality and outputs of the processing pipeline.
 - **Process**:
-    1. A NIfTI file of the PET image overlaid on the T1w MRI is created (`qc/pib_pet_on_T1w.nii.gz`).
-    2. A Python script (`qc_pet_overlay.py`) is called to generate a PNG image showing this overlay from axial, sagittal, and coronal perspectives.
+    1.  **Environment Activation**: A dedicated Python virtual environment (specified by `python_venv_path` in the configuration) is activated to ensure access to necessary libraries (`nilearn`, `matplotlib`, etc.).
+    2.  **GM Mask Creation**: A gray matter (GM) mask is generated from the subject's FreeSurfer `aparc+aseg` segmentation. This is used for one of the QC overlays.
+    3.  **Mosaic Generation**: The `create_qc_mosaics.py` script is executed three times to produce the following PNG images, each showing axial, coronal, and off-center sagittal views:
+        - **Registration QC**: The PET image co-registered to the T1w MRI (`pib_pet_space-T1w.nii.gz`) is overlaid on the T1w image to verify alignment accuracy.
+        - **Segmentation QC**: The generated Gray Matter (GM) mask is overlaid on the T1w image to verify the tissue segmentation.
+        - **SUVR Map QC**: The final SUVR map (`pib_SUVR.nii.gz`) is overlaid on the T1w image to visualize the final output.

@@ -440,562 +440,275 @@ cd ..
 echo "PVC setup complete (Method: {pvc_method}, FWHM: {fwhm_str} mm)"
 """
 
-        def _generate_pet_slurm_content(self, session: SubjectSession, 
+    def _generate_pet_slurm_content(self, session: SubjectSession, tracer: str, session_id: str) -> str:
+        """Generate SLURM script content for PET processing with optional PVC using separate container"""
+        pet_settings = self.config.slurm.pet
+        pvc_section = self._get_pvc_processing_script(session_id, tracer)
+        
+        pvc_method = getattr(self.config, 'pvc_method', 'MG')
+        pvc_fwhm = getattr(self.config, 'pvc_fwhm', [6.0, 6.0, 6.0])
+        fwhm_str = f"{pvc_fwhm[0]},{pvc_fwhm[1]},{pvc_fwhm[2]}"
+        
+        run_pvc = self.config.run_pvc
+        petpvc_container = getattr(self.config, 'petpvc_container', None)
 
-                                       tracer: str, session_id: str) -> str:
+        # --- Start New QC Logic ---
+        qc_script_path = str(Path(__file__).parent.parent.parent / 'scripts' / 'create_qc_mosaics.py')
 
-            """Generate SLURM script content for PET processing with optional PVC using separate container"""
+        qc_generation_section = f"""
+echo ""
+echo "=== Generating QC Mosaic Images ==="
 
+# Activate python environment
+if [ -z "{self.config.python_venv_path}" ]; then
+    echo "ERROR: python_venv_path is not set in the config. Cannot generate QC images."
+    exit 1
+fi
+echo "Activating Python venv: {self.config.python_venv_path}"
+source "{self.config.python_venv_path}/bin/activate"
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to activate Python virtual environment"
+    exit 1
+fi
+
+# Define paths for QC generation
+T1_IMAGE=$FS_DIR/mri/T1.mgz
+REG_PET_IMG=$OUTPUT_DIR/{tracer}_pet_space-T1w.nii.gz
+SUVR_IMG=$OUTPUT_DIR/{tracer}_SUVR.nii.gz
+GM_MASK_IMG=$OUTPUT_DIR/qc/gm_mask_T1_space.nii.gz
+
+# Create GM mask for QC using the FreeSurfer container
+echo "Creating GM mask for QC..."
+singularity exec --nv \\
+  -B $FS_DIR:/fs_subjects/{session_id} \\
+  -B $OUTPUT_DIR/qc:/output_qc \\
+  {self.config.container_path} \\
+  bash -c "mri_binarize --i /fs_subjects/{session_id}/mri/aparc+aseg.mgz --match 3 --match 42 --o /output_qc/gm_mask.mgz && mri_convert /output_qc/gm_mask.mgz /output_qc/gm_mask_T1_space.nii.gz"
+
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to create GM mask"
+fi
+
+# QC 1: Registration
+if [ -f "$REG_PET_IMG" ]; then
+    echo "Generating registration QC..."
+    python {qc_script_path} \\
+        --base $T1_IMAGE \\
+        --overlay $REG_PET_IMG \\
+        --output $OUTPUT_DIR/qc/{session_id}_{tracer}_registration_qc.png \\
+        --title "{session_id} - {tracer.upper()} Registration"
+else
+    echo "WARNING: Registered PET not found, skipping registration QC: $REG_PET_IMG"
+fi
+
+# QC 2: GM Segmentation
+if [ -f "$GM_MASK_IMG" ]; then
+    echo "Generating GM segmentation QC..."
+    python {qc_script_path} \\
+        --base $T1_IMAGE \\
+        --overlay $GM_MASK_IMG \\
+        --output $OUTPUT_DIR/qc/{session_id}_{tracer}_gm_segmentation_qc.png \\
+        --title "{session_id} - GM Segmentation"
+else
+    echo "WARNING: GM mask not found, skipping GM QC: $GM_MASK_IMG"
+fi
+
+# QC 3: SUVR Map
+if [ -f "$SUVR_IMG" ]; then
+    echo "Generating SUVR map QC..."
+    python {qc_script_path} \\
+        --base $T1_IMAGE \\
+        --overlay $SUVR_IMG \\
+        --output $OUTPUT_DIR/qc/{session_id}_{tracer}_suvr_map_qc.png \\
+        --title "{session_id} - {tracer.upper()} SUVR Map"
+else
+    echo "WARNING: SUVR map not found, skipping SUVR QC: $SUVR_IMG"
+fi
+
+# Deactivate venv
+deactivate
+echo "QC generation complete."
+"""
+        # --- End New QC Logic ---
+
+        pvc_execution = ""
+        if run_pvc:
+            pvc_stats_script = r"""
+cd /output
+mri_segstats --i """ + f"{tracer}_SUVR_pvc.nii.gz" + r""" \
+             --seg /fs_subjects/""" + f"{session_id}" + r"""/mri/aparc+aseg.mgz \
+             --ctab /usr/local/freesurfer/8.0.0-1/FreeSurferColorLUT.txt \
+             --sum """ + f"{tracer}_DKT_ROI_stats_pvc.txt"
             
+            pvc_execution = f"""
+echo ""
+echo "=== Running PETPVC Container for Partial Volume Correction ==="
+singularity exec \\
+  -B $OUTPUT_DIR:/data \\
+  -B $FS_DIR:/fs_data \\
+  {petpvc_container} \\
+  petpvc \\
+    -i /data/pvc_work/{tracer}_SUVR.nii.gz \\
+    -m /data/pvc_work/aparc+aseg.nii.gz \\
+    -o /data/{tracer}_SUVR_pvc.nii.gz \\
+    --pvc {pvc_method} \\
+    --fwhm {fwhm_str}
+if [ $? -ne 0 ]; then echo "ERROR: PETPVC failed"; exit 1; fi
+echo "PVC completed successfully"
 
-            pet_settings = self.config.slurm.pet
+echo "Extracting ROI statistics from PVC-corrected image..."
+singularity exec --nv \\
+  --env FREESURFER_HOME="/usr/local/freesurfer/8.0.0-1" \\
+  --env SUBJECTS_DIR="/fs_subjects/" \\
+  -B {self.config.freesurfer_license}:{self.config.freesurfer_home}/license.txt \\
+  -B $FS_DIR:/fs_subjects/{session_id} \\
+  -B $OUTPUT_DIR:/output/ \\
+  {self.config.container_path} \\
+  bash -c "{pvc_stats_script}"
+if [ $? -eq 0 ]; then echo "SUCCESS: PVC statistics extracted"; else echo "ERROR: Failed to extract PVC statistics"; exit 1; fi
+rm -rf $OUTPUT_DIR/pvc_work
+echo "PVC processing completed at: $(date)"
+"""
+        
+        # This heredoc contains the script that runs *inside* the main FreeSurfer container
+        pet_processing_script_heredoc = f"""
+cat << 'EOF' > pet_processing_script.sh
+#!/bin/bash
+. /usr/local/freesurfer/8.0.0-1/SetUpFreeSurfer.sh
 
-            pvc_section = self._get_pvc_processing_script(session_id, tracer)
+echo "=== Starting PET processing (in-container) ==="
+echo "Tracer: {tracer}"
+echo "Started at: $(date)"
 
-            
+cp /pet_input/$(basename {session.pet_files[tracer]}) mean_{tracer}_on_MR.nii.gz
+if [[ mean_{tracer}_on_MR.nii.gz == *.gz ]]; then gunzip mean_{tracer}_on_MR.nii.gz; fi
 
-            # PVC parameters
+echo "--- PET-to-MR Registration ---"
+mri_coreg \\
+  --mov mean_{tracer}_on_MR.nii \\
+  --ref /fs_subjects/{session_id}/mri/norm.mgz \\
+  --reg {tracer}_pet_to_T1w.lta \\
+  --dof 6 --threads {pet_settings['cpus']} --no-coord-dither
+if [ $? -ne 0 ]; then echo "ERROR: mri_coreg failed"; exit 1; fi
 
-            pvc_method = getattr(self.config, 'pvc_method', 'MG')
+mri_vol2vol \\
+  --mov mean_{tracer}_on_MR.nii \\
+  --targ /fs_subjects/{session_id}/mri/norm.mgz \\
+  --reg {tracer}_pet_to_T1w.lta \\
+  --o {tracer}_pet_space-T1w.nii.gz --no-save-reg
+if [ $? -ne 0 ]; then echo "ERROR: mri_vol2vol failed"; exit 1; fi
+gzip mean_{tracer}_on_MR.nii
+echo "Registration completed."
 
-            pvc_fwhm = getattr(self.config, 'pvc_fwhm', [6.0, 6.0, 6.0])
-
-            fwhm_str = f"{pvc_fwhm[0]},{pvc_fwhm[1]},{pvc_fwhm[2]}"
-
-            
-
-            # Determine if we should run PVC
-
-            run_pvc = self.config.run_pvc
-
-            petpvc_container = getattr(self.config, 'petpvc_container', None)
-
-    
-
-            # --- Start New QC Logic ---
-
-            # Path to the new, enhanced QC script
-
-            # Note: Using str() to ensure the path is correctly formatted in the shell script
-
-            qc_script_path = str(Path(__file__).parent.parent.parent / 'scripts' / 'create_qc_mosaics.py')
-
-    
-
-            # New QC generation section that runs outside the main container
-
-            qc_generation_section = f"""
-
-    echo ""
-
-    echo "=== Generating QC Mosaic Images ==="
-
-    
-
-    # Activate python environment
-
-    if [ -z "{self.config.python_venv_path}" ]; then
-
-        echo "ERROR: python_venv_path is not set in the config. Cannot generate QC images."
-
-        exit 1
-
-    fi
-
-    echo "Activating Python venv: {self.config.python_venv_path}"
-
-    source "{self.config.python_venv_path}/bin/activate"
-
-    if [ $? -ne 0 ]; then
-
-        echo "ERROR: Failed to activate Python virtual environment"
-
-        exit 1
-
-    fi
-
-    
-
-    # Define paths for QC generation
-
-    T1_IMAGE=$FS_DIR/mri/T1.mgz
-
-    REG_PET_IMG=$OUTPUT_DIR/{tracer}_pet_space-T1w.nii.gz
-
-    SUVR_IMG=$OUTPUT_DIR/{tracer}_SUVR.nii.gz
-
-    GM_MASK_IMG=$OUTPUT_DIR/qc/gm_mask_T1_space.nii.gz
-
-    
-
-    # Create GM mask for QC using the FreeSurfer container
-
-    echo "Creating GM mask for QC..."
-
-    singularity exec --nv \\
-
-      -B $FS_DIR:/fs_subjects/{session_id} \\
-
-      -B $OUTPUT_DIR/qc:/output_qc \\
-
-      {self.config.container_path} \\
-
-      bash -c "mri_binarize --i /fs_subjects/{session_id}/mri/aparc+aseg.mgz --match 3 --match 42 --o /output_qc/gm_mask.mgz && mri_convert /output_qc/gm_mask.mgz /output_qc/gm_mask_T1_space.nii.gz"
-
-    
-
-    if [ $? -ne 0 ]; then
-
-        echo "ERROR: Failed to create GM mask"
-
-    fi
-
-    
-
-    # QC 1: Registration
-
-    if [ -f "$REG_PET_IMG" ]; then
-
-        echo "Generating registration QC..."
-
-        python {qc_script_path} \\
-
-            --base $T1_IMAGE \\
-
-            --overlay $REG_PET_IMG \\
-
-            --output $OUTPUT_DIR/qc/{session_id}_{tracer}_registration_qc.png \\
-
-            --title "{session_id} - {tracer.upper()} Registration"
-
+echo "--- SUVR Calculation ---"
+if [ "{tracer}" = "tau" ]; then
+    mri_binarize --i /fs_subjects/{session_id}/mri/aparc+aseg.mgz --match 16 --o cerebellum_ref.mgz
+    mri_vol2vol --mov cerebellum_ref.mgz --targ {tracer}_pet_space-T1w.nii.gz --regheader --o cerebellum_ref_pet_space.nii.gz --nearest
+    ref_val=$(mri_segstats --i {tracer}_pet_space-T1w.nii.gz --seg cerebellum_ref_pet_space.nii.gz --id 1 --avgwf | tail -n 1 | awk '{{print $6}}')
+    if [ $(echo "$ref_val > 0" | bc -l) -eq 1 ]; then
+        mri_calc -o {tracer}_SUVR.nii.gz {tracer}_pet_space-T1w.nii.gz div $ref_val
     else
-
-        echo "WARNING: Registered PET not found, skipping registration QC: $REG_PET_IMG"
-
-    fi
-
-    
-
-    # QC 2: GM Segmentation
-
-    if [ -f "$GM_MASK_IMG" ]; then
-
-        echo "Generating GM segmentation QC..."
-
-        python {qc_script_path} \\
-
-            --base $T1_IMAGE \\
-
-            --overlay $GM_MASK_IMG \\
-
-            --output $OUTPUT_DIR/qc/{session_id}_{tracer}_gm_segmentation_qc.png \\
-
-            --title "{session_id} - GM Segmentation"
-
-    else
-
-        echo "WARNING: GM mask not found, skipping GM QC: $GM_MASK_IMG"
-
-    fi
-
-    
-
-    # QC 3: SUVR Map
-
-    if [ -f "$SUVR_IMG" ]; then
-
-        echo "Generating SUVR map QC..."
-
-        python {qc_script_path} \\
-
-            --base $T1_IMAGE \\
-
-            --overlay $SUVR_IMG \\
-
-            --output $OUTPUT_DIR/qc/{session_id}_{tracer}_suvr_map_qc.png \\
-
-            --title "{session_id} - {tracer.upper()} SUVR Map"
-
-    else
-
-        echo "WARNING: SUVR map not found, skipping SUVR QC: $SUVR_IMG"
-
-    fi
-
-    
-
-    # Deactivate venv
-
-    deactivate
-
-    echo "QC generation complete."
-
-    """
-
-            # --- End New QC Logic ---
-
-    
-
-            pvc_execution = ""
-
-            if run_pvc:
-
-                pvc_stats_script = r"""
-
-    cd /output
-
-    mri_segstats --i """ + f"{tracer}_SUVR_pvc.nii.gz" + r""" \
-
-                 --seg /fs_subjects/""" + f"{session_id}" + r"""/mri/aparc+aseg.mgz \
-
-                 --ctab /usr/local/freesurfer/8.0.0-1/FreeSurferColorLUT.txt \
-
-                 --sum """ + f"{tracer}_DKT_ROI_stats_pvc.txt"
-
-                
-
-                pvc_execution = f"""
-
-    echo ""
-
-    echo "=== Running PETPVC Container for Partial Volume Correction ==="
-
-    singularity exec \\
-
-      -B $OUTPUT_DIR:/data \\
-
-      -B $FS_DIR:/fs_data \\
-
-      {petpvc_container} \\
-
-      petpvc \\
-
-        -i /data/pvc_work/{tracer}_SUVR.nii.gz \\
-
-        -m /data/pvc_work/aparc+aseg.nii.gz \\
-
-        -o /data/{tracer}_SUVR_pvc.nii.gz \\
-
-        --pvc {pvc_method} \\
-
-        --fwhm {fwhm_str}
-
-    if [ $? -ne 0 ]; then echo "ERROR: PETPVC failed"; exit 1; fi
-
-    echo "PVC completed successfully"
-
-    
-
-    echo "Extracting ROI statistics from PVC-corrected image..."
-
-    singularity exec --nv \\
-
-      --env FREESURFER_HOME="/usr/local/freesurfer/8.0.0-1" \\
-
-      --env SUBJECTS_DIR="/fs_subjects/" \\
-
-      -B {self.config.freesurfer_license}:/usr/local/freesurfer/8.0.0-1/license.txt \\
-
-      -B $FS_DIR:/fs_subjects/{session_id} \\
-
-      -B $OUTPUT_DIR:/output/ \\
-
-      {self.config.container_path} \\
-
-      bash -c "{pvc_stats_script}"
-
-    if [ $? -eq 0 ]; then echo "SUCCESS: PVC statistics extracted"; else echo "ERROR: Failed to extract PVC statistics"; exit 1; fi
-
-    rm -rf $OUTPUT_DIR/pvc_work
-
-    echo "PVC processing completed at: $(date)"
-
-    """
-
-            
-
-            # This heredoc contains the script that runs *inside* the main FreeSurfer container
-
-            pet_processing_script_heredoc = f"""
-
-    cat << 'EOF' > pet_processing_script.sh
-
-    #!/bin/bash
-
-    . /usr/local/freesurfer/8.0.0-1/SetUpFreeSurfer.sh
-
-    
-
-    echo "=== Starting PET processing (in-container) ==="
-
-    echo "Tracer: {tracer}"
-
-    echo "Started at: $(date)"
-
-    
-
-    cp /pet_input/$(basename {session.pet_files[tracer]}) mean_{tracer}_on_MR.nii.gz
-
-    if [[ mean_{tracer}_on_MR.nii.gz == *.gz ]]; then gunzip mean_{tracer}_on_MR.nii.gz; fi
-
-    
-
-    echo "--- PET-to-MR Registration ---"
-
-    mri_coreg \\
-
-      --mov mean_{tracer}_on_MR.nii \\
-
-      --ref /fs_subjects/{session_id}/mri/norm.mgz \\
-
-      --reg {tracer}_pet_to_T1w.lta \\
-
-      --dof 6 --threads {pet_settings['cpus']} --no-coord-dither
-
-    if [ $? -ne 0 ]; then echo "ERROR: mri_coreg failed"; exit 1; fi
-
-    
-
-    mri_vol2vol \\
-
-      --mov mean_{tracer}_on_MR.nii \\
-
-      --targ /fs_subjects/{session_id}/mri/norm.mgz \\
-
-      --reg {tracer}_pet_to_T1w.lta \\
-
-      --o {tracer}_pet_space-T1w.nii.gz --no-save-reg
-
-    if [ $? -ne 0 ]; then echo "ERROR: mri_vol2vol failed"; exit 1; fi
-
-    gzip mean_{tracer}_on_MR.nii
-
-    echo "Registration completed."
-
-    
-
-    echo "--- SUVR Calculation ---"
-
-    if [ "{tracer}" = "tau" ]; then
-
-        mri_binarize --i /fs_subjects/{session_id}/mri/aparc+aseg.mgz --match 16 --o cerebellum_ref.mgz
-
-        mri_vol2vol --mov cerebellum_ref.mgz --targ {tracer}_pet_space-T1w.nii.gz --regheader --o cerebellum_ref_pet_space.nii.gz --nearest
-
-        ref_val=$(mri_segstats --i {tracer}_pet_space-T1w.nii.gz --seg cerebellum_ref_pet_space.nii.gz --id 1 --avgwf | tail -n 1 | awk '{{print $6}}')
-
-        if [ $(echo "$ref_val > 0" | bc -l) -eq 1 ]; then
-
-            mri_calc -o {tracer}_SUVR.nii.gz {tracer}_pet_space-T1w.nii.gz div $ref_val
-
-        else
-
-            echo "WARNING: Invalid reference value for SUVR calc. Using raw values."
-
-            cp {tracer}_pet_space-T1w.nii.gz {tracer}_SUVR.nii.gz
-
-        fi
-
-    else
-
-        echo "Using raw PET values for {tracer}"
-
+        echo "WARNING: Invalid reference value for SUVR calc. Using raw values."
         cp {tracer}_pet_space-T1w.nii.gz {tracer}_SUVR.nii.gz
-
     fi
-
-    echo "SUVR calculation step completed."
-
-    
-
-    {pvc_section}
-
-    
-
-    echo "--- Extracting ROI statistics (Raw) ---"
-
-    mri_segstats --i {tracer}_SUVR.nii.gz \\
-
-                 --seg /fs_subjects/{session_id}/mri/aparc+aseg.mgz \\
-
-                 --ctab {self.config.freesurfer_home}/FreeSurferColorLUT.txt \\
-
-                 --sum {tracer}_DKT_ROI_stats.txt
-
-    
-
-    echo "Region,Mean_SUVR,Volume_mm3" > {tracer}_DKT_stats.csv
-
-    tail -n +3 {tracer}_DKT_ROI_stats.txt | while read line; do
-
-        if [[ $line =~ ^[[:space:]]*[0-9] ]]; then
-
-            region=$(echo $line | awk '{{print $5}}')
-
-            volume=$(echo $line | awk '{{print $4}}')
-
-            mean_val=$(echo $line | awk '{{print $6}}')
-
-            echo "$region,$mean_val,$volume" >> {tracer}_DKT_stats.csv
-
-        fi
-
-    done
-
-    echo "ROI statistics extracted."
-
-    echo "=== PET processing (in-container) completed at: $(date) ==="
-
-    EOF
-
-    chmod +x pet_processing_script.sh
-
-    """
-
-    
-
-            # This is the main SLURM script content that orchestrates the steps
-
-            return f"""#!/bin/bash
-
-    #SBATCH --job-name=PET_{tracer}_{session_id[:10]}
-
-    #SBATCH --output={self.config.output_dir}/jobs/{session_id}_{tracer}_output.txt
-
-    #SBATCH --error={self.config.output_dir}/jobs/{session_id}_{tracer}_error.txt
-
-    #SBATCH --nodes=1
-
-    #SBATCH --ntasks=1
-
-    #SBATCH --cpus-per-task={pet_settings['cpus']}
-
-    #SBATCH --mem={pet_settings['memory']}
-
-    #SBATCH --time={pet_settings['time']}
-
-    #SBATCH --account={self.config.slurm.account}
-
-    #SBATCH --partition={self.config.slurm.partition}
-
-    #SBATCH --dependency=afterok:${{FREESURFER_JOB_ID}}
-
-    
-
-    # Load required modules
-
-    module load singularity
-
-    
-
-    # Set environment variables
-
-    export FS_LICENSE={self.config.freesurfer_license}
-
-    
-
-    echo "--- Starting {tracer.upper()} PET job for {session_id} at $(date) ---"
-
-    {"echo 'PVC: ENABLED (" + pvc_method + " method, FWHM=" + fwhm_str + ")'" if run_pvc else "echo 'PVC: DISABLED'"}
-
-    
-
-    # Define paths
-
-    PET_FILE={session.pet_files[tracer]}
-
-    FS_DIR={self.config.output_dir}/freesurfer/{session_id}
-
-    OUTPUT_DIR={self.config.output_dir}/pet/{session_id}/{tracer}
-
-    
-
-    # Check if PET output already exists
-
-    if [ -f "$OUTPUT_DIR/pet_processing_completed.flag" ]; then
-
-        echo "WARNING: PET processing output already exists for {session_id} {tracer}"
-
-        if [ "{self.config.force_reprocess}" = "True" ]; then
-
-            echo "Force reprocessing enabled - removing existing output"
-
-            rm -rf "$OUTPUT_DIR"
-
-        else
-
-            echo "Skipping (set force_reprocess: true to reprocess)"
-
-            exit 0
-
-        fi
-
+else
+    echo "Using raw PET values for {tracer}"
+    cp {tracer}_pet_space-T1w.nii.gz {tracer}_SUVR.nii.gz
+fi
+echo "SUVR calculation step completed."
+
+{pvc_section}
+
+echo "--- Extracting ROI statistics (Raw) ---"
+mri_segstats --i {tracer}_SUVR.nii.gz \\
+             --seg /fs_subjects/{session_id}/mri/aparc+aseg.mgz \\
+             --ctab {self.config.freesurfer_home}/FreeSurferColorLUT.txt \\
+             --sum {tracer}_DKT_ROI_stats.txt
+
+echo "Region,Mean_SUVR,Volume_mm3" > {tracer}_DKT_stats.csv
+tail -n +3 {tracer}_DKT_ROI_stats.txt | while read line; do
+    if [[ $line =~ ^[[:space:]]*[0-9] ]]; then
+        region=$(echo $line | awk '{{print $5}}')
+        volume=$(echo $line | awk '{{print $4}}')
+        mean_val=$(echo $line | awk '{{print $6}}')
+        echo "$region,$mean_val,$volume" >> {tracer}_DKT_stats.csv
     fi
+done
+echo "ROI statistics extracted."
+echo "=== PET processing (in-container) completed at: $(date) ==="
+EOF
+chmod +x pet_processing_script.sh
+"""
 
-    mkdir -p $OUTPUT_DIR/qc
+        # This is the main SLURM script content that orchestrates the steps
+        return f"""#!/bin/bash
+#SBATCH --job-name=PET_{tracer}_{session_id[:10]}
+#SBATCH --output={self.config.output_dir}/jobs/{session_id}_{tracer}_output.txt
+#SBATCH --error={self.config.output_dir}/jobs/{session_id}_{tracer}_error.txt
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task={pet_settings['cpus']}
+#SBATCH --mem={pet_settings['memory']}
+#SBATCH --time={pet_settings['time']}
+#SBATCH --account={self.config.slurm.account}
+#SBATCH --partition={self.config.slurm.partition}
+#SBATCH --dependency=afterok:${{FREESURFER_JOB_ID}}
 
-    cd $OUTPUT_DIR
+# Load required modules
+module load singularity
 
-    
+# Set environment variables
+export FS_LICENSE={self.config.freesurfer_license}
 
-    {pet_processing_script_heredoc}
+echo "--- Starting {tracer.upper()} PET job for {session_id} at $(date) ---"
+{"echo 'PVC: ENABLED (" + pvc_method + " method, FWHM=" + fwhm_str + ")'" if run_pvc else "echo 'PVC: DISABLED'"}
 
-    
+# Define paths
+PET_FILE={session.pet_files[tracer]}
+FS_DIR={self.config.output_dir}/freesurfer/{session_id}
+OUTPUT_DIR={self.config.output_dir}/pet/{session_id}/{tracer}
 
-    echo "--- Running PET processing in FreeSurfer container ---"
-
-    singularity exec --nv \\
-
-      --env FREESURFER_HOME="{self.config.freesurfer_home}" \\
-
-      --env SUBJECTS_DIR="/fs_subjects/" \\
-
-      -B {self.config.freesurfer_license}:{self.config.freesurfer_home}/license.txt \\
-
-      -B $(dirname {session.pet_files[tracer]}):/pet_input/ \\
-
-      -B $FS_DIR:/fs_subjects/{session_id} \\
-
-      -B $OUTPUT_DIR:/output/ \\
-
-      -B /scratch:/scratch \\
-
-      {self.config.container_path} \\
-
-      bash /output/pet_processing_script.sh
-
-    if [ $? -ne 0 ]; then echo "ERROR: PET processing in container failed"; exit 1; fi
-
-    echo "--- In-container processing completed successfully ---"
-
-    
-
-    {pvc_execution}
-
-    {qc_generation_section}
-
-    
-
-    # Final completion check
-
-    if [ $? -eq 0 ]; then
-
-        echo "SUCCESS: {tracer.upper()} PET processing completed for {session_id}"
-
-        touch pet_processing_completed.flag
-
+# Check if PET output already exists
+if [ -f "$OUTPUT_DIR/pet_processing_completed.flag" ]; then
+    echo "WARNING: PET processing output already exists for {session_id} {tracer}"
+    if [ "{self.config.force_reprocess}" = "True" ]; then
+        echo "Force reprocessing enabled - removing existing output"
+        rm -rf "$OUTPUT_DIR"
     else
-
-        echo "ERROR: {tracer.upper()} PET processing failed for {session_id}"
-
-        exit 1
-
+        echo "Skipping (set force_reprocess: true to reprocess)"
+        exit 0
     fi
+fi
+mkdir -p $OUTPUT_DIR/qc
+cd $OUTPUT_DIR
 
-    
+{pet_processing_script_heredoc}
 
-    echo "{tracer.upper()} PET processing completed at: $(date)"
+echo "--- Running PET processing in FreeSurfer container ---"
+singularity exec --nv \\
+  --env FREESURFER_HOME="{self.config.freesurfer_home}" \\
+  --env SUBJECTS_DIR="/fs_subjects/" \\
+  -B {self.config.freesurfer_license}:{self.config.freesurfer_home}/license.txt \\
+  -B $(dirname {session.pet_files[tracer]}):/pet_input/ \\
+  -B $FS_DIR:/fs_subjects/{session_id} \\
+  -B $OUTPUT_DIR:/output/ \\
+  -B /scratch:/scratch \\
+  {self.config.container_path} \\
+  bash /output/pet_processing_script.sh
+if [ $? -ne 0 ]; then echo "ERROR: PET processing in container failed"; exit 1; fi
+echo "--- In-container processing completed successfully ---"
 
-    """
+{pvc_execution}
+{qc_generation_section}
 
-    
+# Final completion check
+if [ $? -eq 0 ]; then
+    echo "SUCCESS: {tracer.upper()} PET processing completed for {session_id}"
+    touch pet_processing_completed.flag
+else
+    echo "ERROR: {tracer.upper()} PET processing failed for {session_id}"
+    exit 1
+fi
+
+echo "{tracer.upper()} PET processing completed at: $(date)"
+"""
