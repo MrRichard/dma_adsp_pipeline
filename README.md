@@ -2,7 +2,7 @@
 
 A comprehensive neuroimaging pipeline for automated processing of BIDS-formatted MR and PET data using FreeSurfer and SLURM job scheduling.
 
-**Developed by:** Radiology Informatics and Information Processing Laboratory  
+**Developed by:** Richard Barcus
 **Institution:** Wake Forest University School of Medicine - Department of Radiology
 
 ---
@@ -586,7 +586,7 @@ python scripts/run_pipeline.py --config test_config.yaml --validate-only
 If you use this pipeline in your research, please cite:
 
 ```
-Radiology Informatics and Information Processing Laboratory
+Imaging Technology and Analysis Group (ITAG)
 Wake Forest University School of Medicine
 Department of Radiology
 ```
@@ -616,29 +616,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-## Contact
-
-**Radiology Informatics and Information Processing Laboratory (RIIPL)**  
-Wake Forest University School of Medicine  
-Department of Radiology
-
-For questions or support, please contact [contact information].
-
----
-
-## Version History
-
-### Version 1.0.0
-- Initial release
-- FreeSurfer 8.0 integration
-- Multi-tracer PET support
-- Structural-only processing mode
-- Incremental processing with existing recon detection
-- Brainnetome atlas integration
-- Advanced segmentation modules (WMH, hypothalamus, hippocampus)
 
 ---
 
