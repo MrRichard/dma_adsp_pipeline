@@ -7,5 +7,7 @@ pipeline/
 __pycache__/
 *.egg-info/
 mr_pet_pipeline/config/config.yaml
+mr_pet_pipeline/.venv
+backup_jobs/
 GEMINI.md
 .DS_Store

@@ -444,6 +444,8 @@ echo "PVC setup complete (Method: {pvc_method}, FWHM: {fwhm_str} mm)"
                                    tracer: str, session_id: str) -> str:
         """Generate SLURM script content for PET processing with optional PVC using separate container"""
         
+        freesurfer_home = self.config.freesurfer_home
+        
         pet_settings = self.config.slurm.pet
         pvc_section = self._get_pvc_processing_script(session_id, tracer)
         
