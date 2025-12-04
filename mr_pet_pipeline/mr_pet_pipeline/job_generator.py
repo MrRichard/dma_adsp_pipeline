@@ -414,7 +414,6 @@ mri_segstats --annot {session_id} rh BN_Atlas \\
         # Get PVC parameters from config
         pvc_method = getattr(self.config, 'pvc_method', 'MG')
         pvc_fwhm = getattr(self.config, 'pvc_fwhm', [6.0, 6.0, 6.0])
-        fwhm_str = f"{pvc_fwhm[0]},{pvc_fwhm[1]},{pvc_fwhm[2]}"
         
         return f"""
 echo "=== Preparing for Partial Volume Correction ==="
@@ -437,7 +436,7 @@ cp ../{tracer}_SUVR.nii.gz .
 cp ../aparc+aseg.nii.gz .
 cd ..
 
-echo "PVC setup complete (Method: {pvc_method}, FWHM: {fwhm_str} mm)"
+echo "PVC setup complete (Method: {pvc_method})"
 """
 
     def _generate_pet_slurm_content(self, session: SubjectSession, tracer: str, session_id: str) -> str:
@@ -447,7 +446,6 @@ echo "PVC setup complete (Method: {pvc_method}, FWHM: {fwhm_str} mm)"
         
         pvc_method = getattr(self.config, 'pvc_method', 'MG')
         pvc_fwhm = getattr(self.config, 'pvc_fwhm', [6.0, 6.0, 6.0])
-        fwhm_str = f"{pvc_fwhm[0]},{pvc_fwhm[1]},{pvc_fwhm[2]}"
         
         run_pvc = self.config.run_pvc
         petpvc_container = getattr(self.config, 'petpvc_container', None)
@@ -540,6 +538,8 @@ mri_segstats --i """ + f"{tracer}_SUVR_pvc.nii.gz" + r""" \
              --ctab /usr/local/freesurfer/8.0.0-1/FreeSurferColorLUT.txt \
              --sum """ + f"{tracer}_DKT_ROI_stats_pvc.txt"
             
+            pvc_fwhm_args = f"-x {pvc_fwhm[0]} -y {pvc_fwhm[1]} -z {pvc_fwhm[2]}"
+
             pvc_execution = f"""
 echo ""
 echo "=== Running PETPVC Container for Partial Volume Correction ==="
@@ -552,7 +552,7 @@ singularity exec \\
     -m /data/pvc_work/aparc+aseg.nii.gz \\
     -o /data/{tracer}_SUVR_pvc.nii.gz \\
     --pvc {pvc_method} \\
-    --fwhm {fwhm_str}
+    {pvc_fwhm_args}
 if [ $? -ne 0 ]; then echo "ERROR: PETPVC failed"; exit 1; fi
 echo "PVC completed successfully"
 
@@ -564,7 +564,7 @@ singularity exec --nv \\
   -B $FS_DIR:/fs_subjects/{session_id} \\
   -B $OUTPUT_DIR:/output/ \\
   {self.config.container_path} \\
-  bash -c "{pvc_stats_script}"
+  bash -c '{pvc_stats_script}'
 if [ $? -eq 0 ]; then echo "SUCCESS: PVC statistics extracted"; else echo "ERROR: Failed to extract PVC statistics"; exit 1; fi
 rm -rf $OUTPUT_DIR/pvc_work
 echo "PVC processing completed at: $(date)"
@@ -652,7 +652,6 @@ chmod +x pet_processing_script.sh
 #SBATCH --time={pet_settings['time']}
 #SBATCH --account={self.config.slurm.account}
 #SBATCH --partition={self.config.slurm.partition}
-#SBATCH --dependency=afterok:${{FREESURFER_JOB_ID}}
 
 # Load required modules
 module load singularity
@@ -661,7 +660,7 @@ module load singularity
 export FS_LICENSE={self.config.freesurfer_license}
 
 echo "--- Starting {tracer.upper()} PET job for {session_id} at $(date) ---"
-{"echo 'PVC: ENABLED (" + pvc_method + " method, FWHM=" + fwhm_str + ")'" if run_pvc else "echo 'PVC: DISABLED'"}
+{"echo 'PVC: ENABLED (" + pvc_method + " method)'" if run_pvc else "echo 'PVC: DISABLED'"}
 
 # Define paths
 PET_FILE={session.pet_files[tracer]}
