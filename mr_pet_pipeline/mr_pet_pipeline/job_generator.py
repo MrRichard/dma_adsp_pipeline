@@ -418,22 +418,11 @@ mri_segstats --annot {session_id} rh BN_Atlas \\
         return f"""
 echo "=== Preparing for Partial Volume Correction ==="
 
-# Convert FreeSurfer segmentation to NIfTI for PETPVC
-mri_convert /fs_subjects/{session_id}/mri/aparc+aseg.mgz \\
-    aparc+aseg.nii.gz
-
-if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to convert segmentation"
-    exit 1
-fi
-
-echo "Segmentation converted successfully"
-
 # Create PVC working directory
 mkdir -p pvc_work
 cd pvc_work
 cp ../{tracer}_SUVR.nii.gz .
-cp ../aparc+aseg.nii.gz .
+cp ../tissue_masks_4d.nii.gz .
 cd ..
 
 echo "PVC setup complete (Method: {pvc_method})"
@@ -451,7 +440,7 @@ echo "PVC setup complete (Method: {pvc_method})"
         petpvc_container = getattr(self.config, 'petpvc_container', None)
 
         # --- Start New QC Logic ---
-        qc_script_path = str(Path(__file__).parent.parent.parent / 'scripts' / 'create_qc_mosaics.py')
+        qc_script_path = str(Path(__file__).parent.parent.parent / 'mr_pet_pipeline' / 'scripts' / 'create_qc_mosaics.py')
 
         qc_generation_section = f"""
 echo ""
@@ -473,19 +462,7 @@ fi
 T1_IMAGE=$FS_DIR/mri/T1.mgz
 REG_PET_IMG=$OUTPUT_DIR/{tracer}_pet_space-T1w.nii.gz
 SUVR_IMG=$OUTPUT_DIR/{tracer}_SUVR.nii.gz
-GM_MASK_IMG=$OUTPUT_DIR/qc/gm_mask_T1_space.nii.gz
-
-# Create GM mask for QC using the FreeSurfer container
-echo "Creating GM mask for QC..."
-singularity exec --nv \\
-  -B $FS_DIR:/fs_subjects/{session_id} \\
-  -B $OUTPUT_DIR/qc:/output_qc \\
-  {self.config.container_path} \\
-  bash -c "mri_binarize --i /fs_subjects/{session_id}/mri/aparc+aseg.mgz --match 3 --match 42 --o /output_qc/gm_mask.mgz && mri_convert /output_qc/gm_mask.mgz /output_qc/gm_mask_T1_space.nii.gz"
-
-if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to create GM mask"
-fi
+GM_MASK_IMG=$OUTPUT_DIR/gm_mask.nii.gz
 
 # QC 1: Registration
 if [ -f "$REG_PET_IMG" ]; then
@@ -549,7 +526,7 @@ singularity exec \\
   {petpvc_container} \\
   petpvc \\
     -i /data/pvc_work/{tracer}_SUVR.nii.gz \\
-    -m /data/pvc_work/aparc+aseg.nii.gz \\
+    -m /data/pvc_work/tissue_masks_4d.nii.gz \\
     -o /data/{tracer}_SUVR_pvc.nii.gz \\
     --pvc {pvc_method} \\
     {pvc_fwhm_args}
@@ -580,8 +557,12 @@ echo "=== Starting PET processing (in-container) ==="
 echo "Tracer: {tracer}"
 echo "Started at: $(date)"
 
-cp /pet_input/$(basename {session.pet_files[tracer]}) mean_{tracer}_on_MR.nii.gz
-if [[ mean_{tracer}_on_MR.nii.gz == *.gz ]]; then gunzip mean_{tracer}_on_MR.nii.gz; fi
+cp -v /pet_input/$(basename {session.pet_files[tracer]}) input_{tracer}.nii.gz
+
+echo "Creating mean {tracer} on MR image"
+mri_concat input_{tracer}.nii.gz --mean --o mean_{tracer}_on_MR.nii
+
+if [[ mean_{tracer}_on_MR.nii.gz == *.gz ]]; then gunzip -fv mean_{tracer}_on_MR.nii.gz; fi
 
 echo "--- PET-to-MR Registration ---"
 mri_coreg \\
@@ -600,11 +581,31 @@ if [ $? -ne 0 ]; then echo "ERROR: mri_vol2vol failed"; exit 1; fi
 gzip mean_{tracer}_on_MR.nii
 echo "Registration completed."
 
+echo "Creating 4D binarized mask for PETPVC"
+mri_binarize --i /fs_subjects/{session_id}/mri/aseg.mgz \
+  --match 2 41 7 46 251 252 253 254 255 16 \
+  --o wm_mask.nii.gz
+
+# Extract Gray Matter
+mri_binarize --i /fs_subjects/{session_id}/mri/aseg.mgz \
+  --match 3 42 8 9 10 11 12 13 17 18 26 27 28 47 48 49 50 51 52 53 54 58 59 60 \
+  --o gm_mask.nii.gz
+
+# Extract CSF
+mri_binarize --i /fs_subjects/{session_id}/mri/aseg.mgz \
+  --match 4 5 14 15 24 43 44 \
+  --o csf_mask.nii.gz
+
+# Merge into 4D volume (WM, GM, CSF order)
+mri_concat wm_mask.nii.gz gm_mask.nii.gz csf_mask.nii.gz --o tissue_masks_4d.nii.gz
+
 echo "--- SUVR Calculation ---"
-if [ "{tracer}" = "tau" ]; then
-    mri_binarize --i /fs_subjects/{session_id}/mri/aparc+aseg.mgz --match 16 --o cerebellum_ref.mgz
+if [ "{tracer}" = "pib" ]; then
+    cd /output/
+    mri_binarize --i /fs_subjects/{session_id}/mri/aparc+aseg.mgz --match 47 8 --o cerebellum_ref.mgz
     mri_vol2vol --mov cerebellum_ref.mgz --targ {tracer}_pet_space-T1w.nii.gz --regheader --o cerebellum_ref_pet_space.nii.gz --nearest
-    ref_val=$(mri_segstats --i {tracer}_pet_space-T1w.nii.gz --seg cerebellum_ref_pet_space.nii.gz --id 1 --avgwf | tail -n 1 | awk '{{print $6}}')
+    ref_val=$(mri_segstats --i {tracer}_pet_space-T1w.nii.gz --seg cerebellum_ref_pet_space.nii.gz --id 1 --avgwf mri_segstats.txt | tail -n 1 | awk '{{print $6}}')
+    echo "Reference region (cerebellum_ref) value is $ref_val"
     if [ $(echo "$ref_val > 0" | bc -l) -eq 1 ]; then
         mri_calc -o {tracer}_SUVR.nii.gz {tracer}_pet_space-T1w.nii.gz div $ref_val
     else

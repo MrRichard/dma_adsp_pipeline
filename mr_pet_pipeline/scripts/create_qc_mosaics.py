@@ -41,7 +41,7 @@ def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, of
             cut_coords=[center_coords[2]],
             axes=axes[0],
             figure=fig,
-            add_crosshairs=False
+            #add_crosshairs=False
         )
         plotting.plot_roi(
             roi_img=overlay_img,
@@ -62,7 +62,7 @@ def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, of
             cut_coords=[center_coords[1]],
             axes=axes[1],
             figure=fig,
-            add_crosshairs=False
+            #add_crosshairs=False
         )
         plotting.plot_roi(
             roi_img=overlay_img,
@@ -83,7 +83,7 @@ def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, of
             cut_coords=[sag_coord],
             axes=axes[2],
             figure=fig,
-            add_crosshairs=False
+            #add_crosshairs=False
         )
         plotting.plot_roi(
             roi_img=overlay_img,
