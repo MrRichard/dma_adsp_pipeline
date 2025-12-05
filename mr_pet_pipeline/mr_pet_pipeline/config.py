@@ -64,6 +64,8 @@ class PipelineConfig:
     run_additional_modules: bool = True
     run_brainnetome: bool = True
     run_pvc: bool = False
+    process_all_atlases: bool = False
+    provenance_file: Optional[Path] = None
     
     petpvc_container: Optional[Path] = None
     pvc_method: str = "MG"
@@ -140,6 +142,8 @@ class PipelineConfig:
             self.resample_path = Path(self.resample_path)
         if self.petpvc_container:
             self.petpvc_container = Path(self.petpvc_container)
+        if self.provenance_file:
+            self.provenance_file = Path(self.provenance_file)
         
         # Create SLURM config from dict if needed
         if isinstance(self.slurm, dict):
