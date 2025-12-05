@@ -428,6 +428,59 @@ cd ..
 echo "PVC setup complete (Method: {pvc_method})"
 """
 
+    def _get_process_all_atlases_script(self, session_id: str, tracer: str) -> str:
+        """Get script section for processing all atlases"""
+        if not self.config.process_all_atlases:
+            return ""
+
+        return f"""
+echo "--- Extracting ROI statistics for all atlases ---"
+
+# Function to extract stats for a given atlas
+extract_stats() {{
+    ATLAS_NAME=$1
+    ATLAS_FILE=$2
+    OUTPUT_NAME=$3
+
+    if [ ! -f "$ATLAS_FILE" ]; then
+        echo "WARNING: Atlas file not found, skipping: $ATLAS_FILE"
+        return
+    fi
+
+    echo "Processing atlas: $ATLAS_NAME"
+    mri_segstats --i {tracer}_SUVR.nii.gz \\
+                 --seg $ATLAS_FILE \\
+                 --ctab {self.config.freesurfer_home}/FreeSurferColorLUT.txt \\
+                 --sum {tracer}_${{OUTPUT_NAME}}_ROI_stats.txt
+
+    echo "Region,Mean_SUVR,Volume_mm3" > {tracer}_${{OUTPUT_NAME}}_stats.csv
+    tail -n +3 {tracer}_${{OUTPUT_NAME}}_ROI_stats.txt | while read line; do
+        if [[ $line =~ ^[[:space:]]*[0-9] ]]; then
+            region=$(echo $line | awk '{{print $5}}')
+            volume=$(echo $line | awk '{{print $4}}')
+            mean_val=$(echo $line | awk '{{print $6}}')
+            echo "$region,$mean_val,$volume" >> {tracer}_${{OUTPUT_NAME}}_stats.csv
+        fi
+    done
+    echo "Finished processing $ATLAS_NAME"
+}}
+
+# DKT (aparc+aseg.mgz)
+extract_stats "DKT" "/fs_subjects/{session_id}/mri/aparc+aseg.mgz" "DKT"
+
+# Destrieux (aparc.a2009s+aseg.mgz)
+extract_stats "Destrieux" "/fs_subjects/{session_id}/mri/aparc.a2009s+aseg.mgz" "Destrieux"
+
+# Brainnetome (BN_Atlas+aseg.mgz)
+if [ -f "/fs_subjects/{session_id}/mri/BN_Atlas+aseg.mgz" ]; then
+    extract_stats "Brainnetome" "/fs_subjects/{session_id}/mri/BN_Atlas+aseg.mgz" "Brainnetome"
+else
+    echo "NOTE: Brainnetome atlas not found, skipping."
+fi
+
+echo "--- Finished extracting all ROI statistics ---"
+"""
+
     def _generate_pet_slurm_content(self, session: SubjectSession, tracer: str, session_id: str) -> str:
         """Generate SLURM script content for PET processing with optional PVC using separate container"""
         pet_settings = self.config.slurm.pet
@@ -438,6 +491,7 @@ echo "PVC setup complete (Method: {pvc_method})"
         
         run_pvc = self.config.run_pvc
         petpvc_container = getattr(self.config, 'petpvc_container', None)
+        process_all_atlases_script = self._get_process_all_atlases_script(session_id, tracer)
 
         # --- Start New QC Logic ---
         qc_script_path = str(Path(__file__).parent.parent.parent / 'mr_pet_pipeline' / 'scripts' / 'create_qc_mosaics.py')
@@ -463,6 +517,10 @@ T1_IMAGE=$FS_DIR/mri/T1.mgz
 REG_PET_IMG=$OUTPUT_DIR/{tracer}_pet_space-T1w.nii.gz
 SUVR_IMG=$OUTPUT_DIR/{tracer}_SUVR.nii.gz
 GM_MASK_IMG=$OUTPUT_DIR/gm_mask.nii.gz
+CEREBELLUM_REF_IMG=$OUTPUT_DIR/cerebellum_ref_pet_space.nii.gz
+DKT_LABEL_IMG=$FS_DIR/mri/aparc+aseg.mgz
+DESTRIEUS_LABEL_IMG=$FS_DIR/mri/aparc.a2009s+aseg.mgz
+BRAINNECTOME_LABEL_IMG=$FS_DIR/mri/BN_Atlas+aseg.mgz
 
 # QC 1: Registration
 if [ -f "$REG_PET_IMG" ]; then
@@ -498,6 +556,57 @@ if [ -f "$SUVR_IMG" ]; then
         --title "{session_id} - {tracer.upper()} SUVR Map"
 else
     echo "WARNING: SUVR map not found, skipping SUVR QC: $SUVR_IMG"
+fi
+
+# QC 4: Cerebellum Reference Region
+if [ -f "$CEREBELLUM_REF_IMG" ]; then
+    echo "Generating cerebellum reference region QC..."
+    python {qc_script_path} \\
+        --base $T1_IMAGE \\
+        --overlay $CEREBELLUM_REF_IMG \\
+        --output $OUTPUT_DIR/qc/{session_id}_{tracer}_cerebellum_ref_qc.png \\
+        --title "{session_id} - Cerebellum Reference Region"
+else
+    echo "WARNING: Cerebellum reference region not found, skipping cerebellum QC: $CEREBELLUM_REF_IMG"
+fi
+
+# QC 5: DKT Atlas
+if [ -f "$DKT_LABEL_IMG" ]; then
+    echo "Generating DKT atlas QC..."
+    python {qc_script_path} \\
+        --base $T1_IMAGE \\
+        --overlay $DKT_LABEL_IMG \\
+        --output $OUTPUT_DIR/qc/{session_id}_{tracer}_dkt_atlas_qc.png \\
+        --title "{session_id} - DKT Atlas" \\
+        --mode label
+else
+    echo "WARNING: DKT atlas not found, skipping DKT QC: $DKT_LABEL_IMG"
+fi
+
+# QC 6: Destrieux Atlas
+if [ -f "$DESTRIEUS_LABEL_IMG" ]; then
+    echo "Generating Destrieux atlas QC..."
+    python {qc_script_path} \\
+        --base $T1_IMAGE \\
+        --overlay $DESTRIEUS_LABEL_IMG \\
+        --output $OUTPUT_DIR/qc/{session_id}_{tracer}_destrieux_atlas_qc.png \\
+        --title "{session_id} - Destrieux Atlas" \\
+        --mode label
+else
+    echo "WARNING: Destrieux atlas not found, skipping Destrieux QC: $DESTRIEUS_LABEL_IMG"
+fi
+
+# QC 7: Brainnetome Atlas
+if [ -f "$BRAINNECTOME_LABEL_IMG" ]; then
+    echo "Generating Brainnetome atlas QC..."
+    python {qc_script_path} \\
+        --base $T1_IMAGE \\
+        --overlay $BRAINNECTOME_LABEL_IMG \\
+        --output $OUTPUT_DIR/qc/{session_id}_{tracer}_brainnetome_atlas_qc.png \\
+        --title "{session_id} - Brainnetome Atlas" \\
+        --mode label
+else
+    echo "WARNING: Brainnetome atlas not found, skipping Brainnetome QC: $BRAINNECTOME_LABEL_IMG"
 fi
 
 # Deactivate venv
@@ -597,7 +706,7 @@ mri_binarize --i /fs_subjects/{session_id}/mri/aseg.mgz \
   --o csf_mask.nii.gz
 
 # Merge into 4D volume (WM, GM, CSF order)
-mri_concat wm_mask.nii.gz gm_mask.nii.gz csf_mask.nii.gz --o tissue_masks_4d.nii.gz
+mri_concat gm_mask.nii.gz wm_mask.nii.gz csf_mask.nii.gz --o tissue_masks_4d.nii.gz
 
 echo "--- SUVR Calculation ---"
 if [ "{tracer}" = "pib" ]; then
@@ -636,6 +745,8 @@ tail -n +3 {tracer}_DKT_ROI_stats.txt | while read line; do
     fi
 done
 echo "ROI statistics extracted."
+
+{process_all_atlases_script}
 echo "=== PET processing (in-container) completed at: $(date) ==="
 EOF
 chmod +x pet_processing_script.sh

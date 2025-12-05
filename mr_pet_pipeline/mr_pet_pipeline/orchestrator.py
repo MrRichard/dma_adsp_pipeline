@@ -120,6 +120,9 @@ class PipelineOrchestrator:
         self.logger.info("Step 6: Creating job submission script")
         submission_script = self._create_submission_script(jobs_by_session)
 
+        # Create provenance file
+        self._create_provenance_file(sessions_to_process)
+
         # Step 7: Generate summary report
         self.logger.info("Step 7: Generating summary report")
         all_job_files = {
@@ -284,6 +287,20 @@ echo "Check logs in: {self.config.output_dir}/jobs/"
         
         self.logger.info(f"Created submission script: {script_path}")
         return script_path
+    
+    def _create_provenance_file(self, sessions: List[SubjectSession]):
+        """Create a text file mapping PET files to the T1w file used for processing"""
+        if not self.config.provenance_file:
+            return
+
+        with open(self.config.provenance_file, 'w') as f:
+            f.write("PET_File,T1w_File\n")
+            for session in sessions:
+                if session.pet_files:
+                    for tracer, pet_file in session.pet_files.items():
+                        f.write(f"{pet_file},{session.t1w_file}\n")
+        self.logger.info(f"Provenance file created at: {self.config.provenance_file}")
+    
     
     def _generate_summary_report(self, all_sessions: List[SubjectSession],
                                 sessions_to_process: List[SubjectSession],
