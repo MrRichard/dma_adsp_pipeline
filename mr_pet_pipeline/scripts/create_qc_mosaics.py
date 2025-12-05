@@ -34,13 +34,17 @@ def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, of
         sag_coord = center_coords[0] + off_center_sag
 
         # Default plot settings
-        plot_args = {'alpha': 0.6, 'colorbar': False}
+        plot_args = {}
         
         # Customize plot settings based on title
         if "Registration" in title:
             plot_args['cmap'] = 'hot'
         elif "GM Segmentation" in title or "Cerebellum" in title:
             plot_args['cmap'] = 'Reds'
+        
+        # Add colorbar only for SUVR images
+        plot_args['colorbar'] = "SUVR" in title
+
 
         # --- Create each plot individually ---
         
@@ -101,7 +105,7 @@ def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, of
         )
         axes[2].set_title(f'Sagittal (Offset: {off_center_sag}mm)')
 
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        #plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close(fig)
         print(f"Successfully created QC mosaic: {output_path}")
@@ -152,7 +156,8 @@ def create_label_qc_mosaic(base_image_path, overlay_image_path, output_path, tit
             axes=axes[0],
             figure=fig,
             colorbar=False,
-            cmap='Paired'
+            #cmap='Paired',
+            transparency=0.5
         )
         axes[0].set_title('Axial')
 
@@ -165,7 +170,8 @@ def create_label_qc_mosaic(base_image_path, overlay_image_path, output_path, tit
             axes=axes[1],
             figure=fig,
             colorbar=False,
-            cmap='Paired'
+            #cmap='Paired',
+            transparency=0.5
         )
         axes[1].set_title('Coronal')
 
@@ -178,11 +184,12 @@ def create_label_qc_mosaic(base_image_path, overlay_image_path, output_path, tit
             axes=axes[2],
             figure=fig,
             colorbar=False,
-            cmap='Paired'
+            #cmap='Paired',
+            transparency=0.5
         )
         axes[2].set_title(f'Sagittal (Offset: {off_center_sag}mm)')
 
-        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        #plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close(fig)
         print(f"Successfully created QC mosaic: {output_path}")

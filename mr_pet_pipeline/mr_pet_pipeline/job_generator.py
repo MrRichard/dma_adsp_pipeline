@@ -447,11 +447,17 @@ extract_stats() {{
         return
     fi
 
-    echo "Processing atlas: $ATLAS_NAME"
+    CTAB_FILE="{self.config.freesurfer_home}/FreeSurferColorLUT.txt"
+    if [ "$ATLAS_NAME" = "Brainnetome" ]; then
+        CTAB_FILE="/brainnetome_files/BN_Atlas_210_LUT.txt"
+    fi
+
+    echo "Processing atlas: $ATLAS_NAME with $CTAB_FILE"
     mri_segstats --i {tracer}_SUVR.nii.gz \\
                  --seg $ATLAS_FILE \\
-                 --ctab {self.config.freesurfer_home}/FreeSurferColorLUT.txt \\
-                 --sum {tracer}_${{OUTPUT_NAME}}_ROI_stats.txt
+                 --ctab $CTAB_FILE \\
+                 --sum {tracer}_${{OUTPUT_NAME}}_ROI_stats.txt \\
+                 --nonempty
 
     echo "Region,Mean_SUVR,Volume_mm3" > {tracer}_${{OUTPUT_NAME}}_stats.csv
     tail -n +3 {tracer}_${{OUTPUT_NAME}}_ROI_stats.txt | while read line; do
@@ -653,6 +659,7 @@ singularity exec --nv \\
   -B {self.config.freesurfer_license}:{self.config.freesurfer_home}/license.txt \\
   -B $FS_DIR:/fs_subjects/{session_id} \\
   -B $OUTPUT_DIR:/output/ \\
+  -B {self.config.brainnetome_dir}:/brainnetome_files/ \\
   {self.config.container_path} \\
   bash -c '{pvc_stats_script}'
 if [ $? -eq 0 ]; then echo "SUCCESS: PVC statistics extracted"; else echo "ERROR: Failed to extract PVC statistics"; exit 1; fi
@@ -795,6 +802,10 @@ if [ -f "$OUTPUT_DIR/pet_processing_completed.flag" ]; then
     fi
 fi
 mkdir -p $OUTPUT_DIR/qc
+# Write provenance file
+echo "Structural data source (FreeSurfer session ID): {session_id}" > $OUTPUT_DIR/provenance.txt
+echo "Date of PET processing: $(date)" >> $OUTPUT_DIR/provenance.txt
+
 cd $OUTPUT_DIR
 
 {pet_processing_script_heredoc}
@@ -807,6 +818,7 @@ singularity exec --nv \\
   -B $(dirname {session.pet_files[tracer]}):/pet_input/ \\
   -B $FS_DIR:/fs_subjects/{session_id} \\
   -B $OUTPUT_DIR:/output/ \\
+  -B {self.config.brainnetome_dir}:/brainnetome_files/ \\
   -B /scratch:/scratch \\
   {self.config.container_path} \\
   bash /output/pet_processing_script.sh
