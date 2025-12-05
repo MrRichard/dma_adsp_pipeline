@@ -4,6 +4,7 @@ import argparse
 import nibabel as nib
 from nilearn import plotting
 import matplotlib.pyplot as plt
+import numpy as np
 
 def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, off_center_sag=20):
     """
@@ -32,6 +33,15 @@ def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, of
         # Adjust for off-center sagittal
         sag_coord = center_coords[0] + off_center_sag
 
+        # Default plot settings
+        plot_args = {'alpha': 0.6, 'colorbar': False}
+        
+        # Customize plot settings based on title
+        if "Registration" in title:
+            plot_args['cmap'] = 'hot'
+        elif "GM Segmentation" in title or "Cerebellum" in title:
+            plot_args['cmap'] = 'Reds'
+
         # --- Create each plot individually ---
         
         # 1. Axial view
@@ -41,7 +51,6 @@ def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, of
             cut_coords=[center_coords[2]],
             axes=axes[0],
             figure=fig,
-            #add_crosshairs=False
         )
         plotting.plot_roi(
             roi_img=overlay_img,
@@ -50,7 +59,7 @@ def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, of
             cut_coords=[center_coords[2]],
             axes=axes[0],
             figure=fig,
-            alpha=0.6
+            **plot_args
         )
         axes[0].set_title('Axial')
 
@@ -61,7 +70,6 @@ def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, of
             cut_coords=[center_coords[1]],
             axes=axes[1],
             figure=fig,
-            #add_crosshairs=False
         )
         plotting.plot_roi(
             roi_img=overlay_img,
@@ -70,7 +78,7 @@ def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, of
             cut_coords=[center_coords[1]],
             axes=axes[1],
             figure=fig,
-            alpha=0.6
+            **plot_args
         )
         axes[1].set_title('Coronal')
 
@@ -81,7 +89,6 @@ def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, of
             cut_coords=[sag_coord],
             axes=axes[2],
             figure=fig,
-            #add_crosshairs=False
         )
         plotting.plot_roi(
             roi_img=overlay_img,
@@ -90,7 +97,7 @@ def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, of
             cut_coords=[sag_coord],
             axes=axes[2],
             figure=fig,
-            alpha=0.6
+            **plot_args
         )
         axes[2].set_title(f'Sagittal (Offset: {off_center_sag}mm)')
 
@@ -117,7 +124,12 @@ def create_label_qc_mosaic(base_image_path, overlay_image_path, output_path, tit
     try:
         # Load the base and overlay images
         base_img = nib.load(base_image_path)
-        overlay_img = nib.load(overlay_image_path)
+        overlay_img_orig = nib.load(overlay_image_path)
+
+        # Set 0 label to NaN to make it transparent
+        overlay_data = overlay_img_orig.get_fdata()
+        overlay_data[overlay_data == 0] = np.nan
+        overlay_img = nib.Nifti1Image(overlay_data, overlay_img_orig.affine)
 
         # Create a figure
         fig, axes = plt.subplots(1, 3, figsize=(15, 5))
@@ -165,7 +177,7 @@ def create_label_qc_mosaic(base_image_path, overlay_image_path, output_path, tit
             cut_coords=[sag_coord],
             axes=axes[2],
             figure=fig,
-            colorbar=True,
+            colorbar=False,
             cmap='Paired'
         )
         axes[2].set_title(f'Sagittal (Offset: {off_center_sag}mm)')

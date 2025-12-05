@@ -516,6 +516,10 @@ fi
 T1_IMAGE=$FS_DIR/mri/T1.mgz
 REG_PET_IMG=$OUTPUT_DIR/{tracer}_pet_space-T1w.nii.gz
 SUVR_IMG=$OUTPUT_DIR/{tracer}_SUVR.nii.gz
+if [ "{self.config.run_pvc}" = "True" ] && [ -f "$OUTPUT_DIR/{tracer}_SUVR_pvc.nii.gz" ]; then
+    SUVR_IMG=$OUTPUT_DIR/{tracer}_SUVR_pvc.nii.gz
+    echo "Using PVC corrected SUVR image for QC"
+fi
 GM_MASK_IMG=$OUTPUT_DIR/gm_mask.nii.gz
 CEREBELLUM_REF_IMG=$OUTPUT_DIR/cerebellum_ref_pet_space.nii.gz
 DKT_LABEL_IMG=$FS_DIR/mri/aparc+aseg.mgz
