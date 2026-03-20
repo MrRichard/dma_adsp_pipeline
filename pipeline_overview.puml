@@ -1,0 +1,29 @@
+@startuml MR-PET Pipeline Overview
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName Arial
+skinparam ArrowColor #555555
+
+title MR-PET Processing Pipeline — High Level Overview
+
+start
+
+:**Pipeline Setup**\nLoad config, discover MR and PET sessions,\nmatch MR↔PET by age proximity,\ngenerate SLURM job scripts;
+
+fork
+  :**FreeSurfer Reconstruction**\nRun recon-all on T1w (+ optional FLAIR);\n\n**Optional modules:**\nWMH segmentation, hypothalamic subunits,\nhippocampal subfields;\n\n**Optional atlas:**\nBrainnetome 246-region parcellation;
+fork again
+  note right
+    PET jobs depend on FreeSurfer
+    completing successfully
+  end note
+end fork
+
+:**PET Registration & SUVR**\nRegister PET to T1w space;\nCalculate SUVR\n(cerebellar reference for PIB,\nraw values for Tau/MK6240);\nOptional partial volume correction (PVC);
+
+:**ROI Quantification**\nExtract mean SUVR per region\nacross DKT, Destrieux,\nand Brainnetome atlases;
+
+:**Quality Control**\nGenerate mosaic images for\nregistration, GM segmentation,\nSUVR map, reference region,\nand atlas overlays;
+
+stop
+
+@enduml

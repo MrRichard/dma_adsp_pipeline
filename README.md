@@ -52,7 +52,7 @@ The MR-PET Processing Pipeline automates the processing of structural MRI (T1w, 
 
 ### PET Processing
 - Automated PET-to-T1w registration using FreeSurfer tools (`mri_coreg`)
-- SUVR calculation with cerebellar reference (Tau)
+- SUVR calculation with cerebellar reference (PIB); raw values used for Tau/MK6240
 - ROI-based quantification using FreeSurfer parcellations
 - Quality control image generation
 
@@ -80,6 +80,10 @@ The MR-PET Processing Pipeline automates the processing of structural MRI (T1w, 
 ```
 pyyaml >= 6.0
 pandas >= 1.5.0
+nibabel >= 5.3.2
+matplotlib >= 3.10.7
+numpy >= 2.3.4
+pillow >= 12.0.0
 ```
 
 ---
@@ -505,7 +509,7 @@ bids_dir/
 └── sub-002/
     └── ...
 
-pet_dir/
+tau_pet_dir/         (configured as pet_dirs.tau)
 ├── sub-001/
 │   ├── ses-07691/
 │   │   └── pet/
@@ -514,6 +518,14 @@ pet_dir/
 │       └── ...
 └── sub-002/
     └── ...
+
+pib_pet_dir/         (configured as pet_dirs.pib)
+├── sub-001/
+│   ├── ses-07645/
+│   │   └── pet/
+│   │       └── sub-001_ses-07645_pib.nii.gz
+│   └── ...
+└── ...
 ```
 
 **Session naming convention:**
