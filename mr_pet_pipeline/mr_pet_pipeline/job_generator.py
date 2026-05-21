@@ -938,6 +938,40 @@ mkdir -p $OUTPUT_DIR/qc
 # Write provenance file
 echo "Structural data source (FreeSurfer session ID): {session_id}" > $OUTPUT_DIR/provenance.txt
 echo "Date of PET processing: $(date)" >> $OUTPUT_DIR/provenance.txt
+echo "Tracer: {tracer}" >> $OUTPUT_DIR/provenance.txt
+
+# Parse PET sidecar JSON metadata (if enabled)
+if [ "{self.config.pet_preprocessing.get('use_json_metadata', True)}" = "True" ]; then
+    PET_JSON_DIR=$(dirname "$PET_FILE")
+    PET_BASENAME=$(basename "$PET_FILE" .nii.gz)
+    PET_BASENAME=$(basename "$PET_BASENAME" .nii)
+    PET_JSON="$PET_JSON_DIR/${PET_BASENAME}.json"
+    
+    if [ -f "$PET_JSON" ]; then
+        echo "=== Parsing PET sidecar JSON metadata ==="
+        TRACER_NAME=$(python3 -c "import json; d=json.load(open('$PET_JSON')); print(d.get('TracerName',''))" 2>/dev/null || grep -oP '"TracerName":\s*"\K[^"]+' "$PET_JSON" 2>/dev/null)
+        SCAN_START=$(python3 -c "import json; d=json.load(open('$PET_JSON')); print(d.get('ScanStart',''))" 2>/dev/null || grep -oP '"ScanStart":\s*"\K[^"]+' "$PET_JSON" 2>/dev/null)
+        INJECTION_START=$(python3 -c "import json; d=json.load(open('$PET_JSON')); print(d.get('InjectionStart',''))" 2>/dev/null || grep -oP '"InjectionStart":\s*"\K[^"]+' "$PET_JSON" 2>/dev/null)
+        DECAY_CORRECTED=$(python3 -c "import json; d=json.load(open('$PET_JSON')); print(d.get('ImageDecayCorrected',''))" 2>/dev/null || grep -oP '"ImageDecayCorrected":\s*"\K[^"]+' "$PET_JSON" 2>/dev/null)
+        
+        echo "TracerName: $TRACER_NAME" >> $OUTPUT_DIR/provenance.txt
+        echo "ScanStart: $SCAN_START" >> $OUTPUT_DIR/provenance.txt
+        echo "InjectionStart: $INJECTION_START" >> $OUTPUT_DIR/provenance.txt
+        echo "ImageDecayCorrected: $DECAY_CORRECTED" >> $OUTPUT_DIR/provenance.txt
+        
+        # Calculate injection-to-scan delay if both timestamps are available
+        if [ -n "$SCAN_START" ] && [ -n "$INJECTION_START" ]; then
+            INJ_SEC=$(python3 -c "import sys; h,m,s=sys.argv[1].split(':'); print(int(h)*3600+int(m)*60+int(s))" "$INJECTION_START")
+            SCN_SEC=$(python3 -c "import sys; h,m,s=sys.argv[1].split(':'); print(int(h)*3600+int(m)*60+int(s))" "$SCAN_START")
+            DIFF_SEC=$(( SCN_SEC - INJ_SEC ))
+            DIFF_MIN=$(python3 -c "print($DIFF_SEC / 60)")
+            echo "Injection-to-scan delay (min): $DIFF_MIN" >> $OUTPUT_DIR/provenance.txt
+            echo "Injection-to-scan delay: ${DIFF_MIN} minutes"
+        fi
+    else
+        echo "WARNING: PET sidecar JSON not found at $PET_JSON"
+    fi
+fi
 
 {pet_ants_preprocessing}
 
