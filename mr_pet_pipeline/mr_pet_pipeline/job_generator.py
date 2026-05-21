@@ -724,7 +724,7 @@ if [ "{tracer}" = "pib" ]; then
     cd /output/
     mri_binarize --i /fs_subjects/{session_id}/mri/aparc+aseg.mgz --match 47 8 --o cerebellum_ref.mgz
     mri_vol2vol --mov cerebellum_ref.mgz --targ {tracer}_pet_space-T1w.nii.gz --regheader --o cerebellum_ref_pet_space.nii.gz --nearest
-    ref_val=$(mri_segstats --i {tracer}_pet_space-T1w.nii.gz --seg cerebellum_ref_pet_space.nii.gz --id 1 --avgwf mri_segstats.txt | tail -n 1 | awk '{{print $6}}')
+    ref_val=$(mri_segstats --i {tracer}_pet_space-T1w.nii.gz --seg cerebellum_ref_pet_space.nii.gz --id 1 --avgwf mri_segstats.txt | grep -E '^[0-9]' | tail -n 1 | awk '{{print $6}}')
     echo "Reference region (cerebellum_ref) value is $ref_val"
     if [ $(echo "$ref_val > 0" | bc -l) -eq 1 ]; then
         mri_calc -o {tracer}_SUVR.nii.gz {tracer}_pet_space-T1w.nii.gz div $ref_val
