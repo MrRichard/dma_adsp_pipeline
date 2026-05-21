@@ -60,6 +60,15 @@ class PipelineConfig:
     structural_only: bool = False  # NEW: Process only MR data, skip PET
     max_age_difference: float = 5.0
     tracers: List[str] = field(default_factory=lambda: ['tau', 'pib'])
+    
+    # PET preprocessing options
+    pet_preprocessing: Dict[str, Any] = field(default_factory=lambda: {
+        'method': 'freesurfer_simple',  # "freesurfer_simple" (legacy) or "ants_motion_correction"
+        'ants_module': 'ants/2.5.1',
+        'fsl_module': 'fsl/6.0.7.4',
+        'late_frame_count': 4,
+        'use_json_metadata': True,
+    })
     force_reprocess: bool = False
     run_additional_modules: bool = True
     run_brainnetome: bool = True

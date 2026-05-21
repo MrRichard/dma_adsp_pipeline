@@ -406,6 +406,125 @@ mri_segstats --annot {session_id} rh BN_Atlas \\
     --sum /output/{session_id}/stats/rh.BN_Atlas.stats
 """
 
+    def _get_ants_preprocessing_script(self, session_id: str, tracer: str) -> str:
+        """Generate host-side ANTs motion correction + late-frame averaging script
+
+        This runs BEFORE the FreeSurfer container, using host-loaded ANTs/FSL modules.
+        Produces a motion-corrected, late-frame-averaged PET image for co-registration.
+        The in-container mri_concat is then skipped since preprocessing is already done.
+        """
+        pp = self.config.pet_preprocessing
+        if pp.get('method', 'freesurfer_simple') != 'ants_motion_correction':
+            return ""
+
+        late_count = pp.get('late_frame_count', 4)
+
+        return f"""
+echo "=== Host-side PET Preprocessing: ANTs Motion Correction + Late-Frame Averaging ==="
+
+# Load host modules (loaded inside Singularity exec so they're on the host path)
+module load {pp['ants_module']}
+module load {pp['fsl_module']}
+export FSLOUTPUTTYPE=NIFTI
+
+RAW_PET=$PET_FILE
+echo "Raw PET file: $RAW_PET"
+
+# Step 2a: Compute average of original 4D PET as reference
+echo "Computing average of original 4D PET as reference..."
+antsMotionCorr \\
+    -d 3 \\
+    -a $RAW_PET \\
+    -o $OUTPUT_DIR/mc_avg_{tracer}_{session_id}.nii \\
+    -u 1 \\
+    -e 1 \\
+    -v 1
+
+if [ ! -f "$OUTPUT_DIR/mc_avg_{tracer}_{session_id}.nii" ]; then
+    echo "ERROR: ANTs averaging failed. Cannot proceed with motion correction."
+    exit 1
+fi
+echo "Reference average computed."
+
+# Step 2b: Motion correction using average as reference
+echo "Running ANTs rigid motion correction..."
+antsMotionCorr \\
+    -d 3 \\
+    -o [ $OUTPUT_DIR/mc_prefix_{tracer}_ , $OUTPUT_DIR/mc_PET_{tracer}_{session_id}.nii ] \\
+    -m MI[ $OUTPUT_DIR/mc_avg_{tracer}_{session_id}.nii, $RAW_PET, 1, 32, Regular, 0.2 ] \\
+    -t Rigid[ 0.1 ] \\
+    -i 25 \\
+    -e 1 \\
+    -s 0 \\
+    -f 1 \\
+    -u 1 \\
+    -v 1
+
+if [ ! -f "$OUTPUT_DIR/mc_PET_{tracer}_{session_id}.nii" ]; then
+    echo "ERROR: ANTs motion correction failed."
+    exit 1
+fi
+echo "Motion correction completed."
+
+# Step 3: Split into frames and extract last N
+echo "Splitting motion-corrected PET into frames..."
+fslsplit $OUTPUT_DIR/mc_PET_{tracer}_{session_id}.nii $OUTPUT_DIR/vol_{tracer}_ -t
+
+n_frames=$(fslnvols $OUTPUT_DIR/mc_PET_{tracer}_{session_id}.nii)
+echo "Total frames: $n_frames"
+
+# Safety: if frames are fewer than requested, use all available
+if [ "$n_frames" -lt "{late_count}" ]; then
+    echo "WARNING: Only $n_frames frames available, using all instead of {late_count}"
+    late_count=$n_frames
+else
+    late_count={late_count}
+fi
+
+start_idx=$(( n_frames - late_count ))
+echo "Using last $late_count frames (starting at frame $start_idx) for time averaging"
+
+last_frames=""
+for i in $(seq $start_idx $(( n_frames - 1 ))); do
+    frame=$OUTPUT_DIR/vol_{tracer}_$(printf '%04d' $i).nii
+    echo "  Including frame: $frame"
+    last_frames="$last_frames $frame"
+done
+
+# Step 4: Merge and average the selected frames
+echo "Merging selected frames..."
+fslmerge -t $OUTPUT_DIR/last_frames_{tracer}_{session_id}.nii $last_frames
+
+if [ ! -f "$OUTPUT_DIR/last_frames_{tracer}_{session_id}.nii" ]; then
+    echo "ERROR: Merging frames failed."
+    exit 1
+fi
+
+echo "Computing time-averaged image from selected frames..."
+antsMotionCorr \\
+    -d 3 \\
+    -a $OUTPUT_DIR/last_frames_{tracer}_{session_id}.nii \\
+    -o $OUTPUT_DIR/preproc_mean_{tracer}_{session_id}.nii \\
+    -u 1 \\
+    -e 1 \\
+    -v 1
+
+if [ ! -f "$OUTPUT_DIR/preproc_mean_{tracer}_{session_id}.nii" ]; then
+    echo "ERROR: Time averaging failed."
+    exit 1
+fi
+
+# Convert to nii.gz for container compatibility
+gzip -f $OUTPUT_DIR/preproc_mean_{tracer}_{session_id}.nii 2>/dev/null || true
+echo "=== Host-side preprocessing complete: preproc_mean_{tracer}_{session_id}.nii.gz ==="
+
+# Cleanup intermediate files
+rm -f $OUTPUT_DIR/vol_{tracer}_*.nii
+rm -f $OUTPUT_DIR/last_frames_{tracer}_{session_id}.nii
+rm -f $OUTPUT_DIR/mc_avg_{tracer}_{session_id}.nii
+rm -f $OUTPUT_DIR/mc_prefix_{tracer}_*.nii
+"""
+
     def _get_pvc_processing_script(self, session_id: str, tracer: str) -> str:
         """Generate PVC processing preparation section"""
         if not self.config.run_pvc:
@@ -667,6 +786,16 @@ rm -rf $OUTPUT_DIR/pvc_work
 echo "PVC processing completed at: $(date)"
 """
         
+        pet_ants_preprocessing = self._get_ants_preprocessing_script(session_id, tracer)
+        use_ants = self.config.pet_preprocessing.get('method', 'freesurfer_simple') == 'ants_motion_correction'
+
+        # Choose the correct input image for the container
+        # If ANTs preprocessing ran, we bind-mount the preprocessed file as input
+        container_input = "preproc_mean_{tracer}_{session_id}.nii.gz" if use_ants else "$(basename {session.pet_files[tracer]})"
+        container_mri_concat = f"""# Skipping mri_concat -- preprocessing was done on host via ANTs"""
+        if not use_ants:
+            container_mri_concat = f"""mri_concat input_{tracer}.nii.gz --mean --o mean_{tracer}_on_MR.nii"""
+
         # This heredoc contains the script that runs *inside* the main FreeSurfer container
         pet_processing_script_heredoc = f"""
 cat << 'EOF' > pet_processing_script.sh
@@ -677,10 +806,10 @@ echo "=== Starting PET processing (in-container) ==="
 echo "Tracer: {tracer}"
 echo "Started at: $(date)"
 
-cp -v /pet_input/$(basename {session.pet_files[tracer]}) input_{tracer}.nii.gz
+cp -v /pet_input/{container_input} input_{tracer}.nii.gz
 
 echo "Creating mean {tracer} on MR image"
-mri_concat input_{tracer}.nii.gz --mean --o mean_{tracer}_on_MR.nii
+{container_mri_concat}
 
 if [[ mean_{tracer}_on_MR.nii.gz == *.gz ]]; then gunzip -fv mean_{tracer}_on_MR.nii.gz; fi
 
@@ -763,6 +892,10 @@ EOF
 chmod +x pet_processing_script.sh
 """
 
+        # Build the PET input bind mount source
+        # When ANTs preprocessing is active, the preprocessed file is in OUTPUT_DIR
+        pet_bind_source = f"$OUTPUT_DIR" if use_ants else f"$(dirname {session.pet_files[tracer]})"
+
         # This is the main SLURM script content that orchestrates the steps
         return f"""#!/bin/bash
 #SBATCH --job-name=PET_{tracer}_{session_id[:10]}
@@ -806,6 +939,8 @@ mkdir -p $OUTPUT_DIR/qc
 echo "Structural data source (FreeSurfer session ID): {session_id}" > $OUTPUT_DIR/provenance.txt
 echo "Date of PET processing: $(date)" >> $OUTPUT_DIR/provenance.txt
 
+{pet_ants_preprocessing}
+
 cd $OUTPUT_DIR
 
 {pet_processing_script_heredoc}
@@ -815,7 +950,7 @@ singularity exec --nv \\
   --env FREESURFER_HOME="{self.config.freesurfer_home}" \\
   --env SUBJECTS_DIR="/fs_subjects/" \\
   -B {self.config.freesurfer_license}:{self.config.freesurfer_home}/license.txt \\
-  -B $(dirname {session.pet_files[tracer]}):/pet_input/ \\
+  -B {pet_bind_source}:/pet_input/ \\
   -B $FS_DIR:/fs_subjects/{session_id} \\
   -B $OUTPUT_DIR:/output/ \\
   -B {self.config.brainnetome_dir}:/brainnetome_files/ \\
