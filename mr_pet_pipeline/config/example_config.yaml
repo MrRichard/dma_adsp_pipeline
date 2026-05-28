@@ -26,6 +26,17 @@ run_additional_modules: true      # Run WMH-SynthSeg, hypothalamic, and hippocam
 run_brainnetome: true             # Run Brainnetome atlas parcellation
 run_pvc: false                    # Run Partial Volume Correction for PET
 
+# PET preprocessing settings
+# method: "freesurfer_simple" uses the legacy mri_concat --mean inside the FreeSurfer container
+# method: "ants_motion_correction" runs ANTs rigid motion correction + late-frame averaging
+# on the host side before the FreeSurfer container, producing a cleaner reference image
+pet_preprocessing:
+  method: "freesurfer_simple"    # "freesurfer_simple" or "ants_motion_correction"
+  ants_module: "ants/2.5.1"      # Module to load for ANTs on the HPC host
+  fsl_module: "fsl/6.0.7.4"      # Module to load for FSL on the HPC host
+  late_frame_count: 4            # Number of late frames to average (PiB protocol)
+  use_json_metadata: true        # Parse PET sidecar JSON for tracer metadata
+
 # SLURM job settings
 slurm:
   partition: "defq"               # SLURM partition for job submission
