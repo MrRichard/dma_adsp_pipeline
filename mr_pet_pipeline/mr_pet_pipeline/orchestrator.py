@@ -284,10 +284,15 @@ echo "="*60
             elif post_recon_job:
                 script_content += f"POST_RECON_JOB_ID=$(sbatch --parsable {post_recon_job})\n"
                 script_content += f"echo 'Submitted Post-Recon job for {session_id}: $POST_RECON_JOB_ID'\n"
-            elif pet_jobs: # PET-only mode
+            elif pet_jobs: # FreeSurfer already complete, submit PET directly
+                fs_dir = f"{self.config.output_dir}/freesurfer/{session_id}"
+                script_content += f"if [ ! -f \"{fs_dir}/mri/norm.mgz\" ]; then\n"
+                script_content += f"  echo 'SKIPPING PET for {session_id}: FreeSurfer recon not complete ({fs_dir})'\n"
+                script_content += f"else\n"
                 for pet_job in pet_jobs:
-                    script_content += f"PET_JOB_ID=$(sbatch --parsable {pet_job})\n"
-                    script_content += f"echo 'Submitted PET-only job for {session_id}: $PET_JOB_ID'\n"
+                    script_content += f"  PET_JOB_ID=$(sbatch --parsable {pet_job})\n"
+                    script_content += f"  echo '  - Submitted PET job for {session_id}: $PET_JOB_ID'\n"
+                script_content += f"fi\n"
 
             script_content += "\n"
 

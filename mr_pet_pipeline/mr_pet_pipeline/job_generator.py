@@ -923,6 +923,13 @@ PET_FILE={session.pet_files[tracer]}
 FS_DIR={self.config.output_dir}/freesurfer/{session_id}
 OUTPUT_DIR={self.config.output_dir}/pet/{session_id}/{tracer}
 
+# Verify FreeSurfer recon is complete before proceeding
+if [ ! -f "$FS_DIR/mri/norm.mgz" ]; then
+    echo "ERROR: FreeSurfer recon not complete for {session_id} (missing $FS_DIR/mri/norm.mgz)"
+    echo "Ensure the FreeSurfer job completed successfully before running PET processing."
+    exit 1
+fi
+
 # Check if PET output already exists
 if [ -f "$OUTPUT_DIR/pet_processing_completed.flag" ]; then
     echo "WARNING: PET processing output already exists for {session_id} {tracer}"
