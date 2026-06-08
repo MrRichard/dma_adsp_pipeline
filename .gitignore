@@ -12,3 +12,5 @@ backup_jobs/
 GEMINI.md
 CLAUDE.md
 .DS_Store
+venv/
+sample_data_processing/
