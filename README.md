@@ -175,7 +175,9 @@ pet_dirs:
 
 # Processing settings
 structural_only: false
-tracers: ["tau", "pib"]
+tracers:
+  - tau
+  - pib
 max_age_difference: 5.0  # years
 force_reprocess: false
 
@@ -184,6 +186,8 @@ brainnetome_dir: "/path/to/BN_Atlas_freesurfer/"
 run_additional_modules: true
 run_brainnetome: true
 run_pvc: false
+# petpvc_container is required when run_pvc: true
+# petpvc_container: "/path/to/petpvc.sif"
 
 # SLURM settings
 slurm:
@@ -210,7 +214,9 @@ slurm:
 | `tracers` | List of PET tracers to process | `["tau", "pib"]` |
 | `run_additional_modules` | Enable WMH, hypothalamus, hippocampus modules | `true` |
 | `run_brainnetome` | Add Brainnetome atlas parcellation | `true` |
-| `require_flair` | Only process sessions with FLAIR | `false` |
+| `run_pvc` | Run Partial Volume Correction for PET | `false` |
+| `petpvc_container` | Path to `petpvc.sif` — **required** when `run_pvc: true` | `null` |
+| `validation.require_flair` | Only process sessions with FLAIR (nested under `validation:`) | `false` |
 
 ---
 
@@ -294,7 +300,9 @@ structural_only: false
 pet_dirs:
   tau: "/path/to/tau/"
   pib: "/path/to/pib/"
-tracers: ["tau", "pib"]
+tracers:
+  - tau
+  - pib
 ```
 
 **Behavior:**
@@ -466,7 +474,29 @@ When `structural_only: false`, the pipeline matches MR and PET sessions:
 - Verify SLURM account and partition names
 - Test container manually: `singularity exec container.sif ls`
 
-**5. "All sessions have completed FreeSurfer recons"**
+**5. "PVC enabled but petpvc_container not specified" / "PETPVC container not found"**
+
+*Cause:* `run_pvc: true` requires an explicit path to the PETPVC Singularity container.
+
+*Solution:*
+- Add `petpvc_container` to your config alongside `run_pvc`:
+  ```yaml
+  run_pvc: true
+  petpvc_container: "/path/to/petpvc.sif"
+  ```
+- Verify the `.sif` file exists at the specified path
+
+**6. "`tracers` YAML parse error" (unexpected `]`)**
+
+*Cause:* Flow-sequence notation `tracers: ["pib"]` can cause parse errors in some YAML environments.
+
+*Solution:* Use block-sequence style instead:
+```yaml
+tracers:
+  - pib
+```
+
+**7. "All sessions have completed FreeSurfer recons"**
 
 *Cause:* All sessions were previously processed.
 
@@ -557,7 +587,10 @@ pet_dir/
    ```yaml
    pet_dirs:
      amyloid: "/path/to/amyloid/"
-   tracers: ["tau", "pib", "amyloid"]
+   tracers:
+     - tau
+     - pib
+     - amyloid
    ```
 
 2. Update tracer classification in `parsers.py`:
