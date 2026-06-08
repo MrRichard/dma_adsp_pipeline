@@ -228,7 +228,7 @@ singularity exec --nv \\
   -B {self.config.brainnetome_dir}:/brainnetome_files/ \\
   -B /scratch:/scratch \\
   {self.config.container_path} \\
-  bash /input_data/run_freesurfer.sh
+  /bin/bash /input_data/run_freesurfer.sh
 
 # Check completion status
 if [ $? -eq 0 ]; then
@@ -320,7 +320,7 @@ singularity exec --nv \\
   -B {self.config.brainnetome_dir}:/brainnetome_files/ \\
   -B /scratch:/scratch \\
   {self.config.container_path} \\
-  bash /output/{session_id}/run_post_recon.sh
+  /bin/bash /output/{session_id}/run_post_recon.sh
 
 # Check completion status
 if [ $? -eq 0 ]; then
@@ -780,7 +780,7 @@ singularity exec --nv \\
   -B $OUTPUT_DIR:/output/ \\
   -B {self.config.brainnetome_dir}:/brainnetome_files/ \\
   {self.config.container_path} \\
-  bash -c '{pvc_stats_script}'
+  /bin/bash -c '{pvc_stats_script}'
 if [ $? -eq 0 ]; then echo "SUCCESS: PVC statistics extracted"; else echo "ERROR: Failed to extract PVC statistics"; exit 1; fi
 rm -rf $OUTPUT_DIR/pvc_work
 echo "PVC processing completed at: $(date)"
@@ -990,7 +990,7 @@ singularity exec --nv \\
   -B {self.config.brainnetome_dir}:/brainnetome_files/ \\
   -B /scratch:/scratch \\
   {self.config.container_path} \\
-  bash /output/pet_processing_script.sh
+  /bin/bash /output/pet_processing_script.sh
 if [ $? -ne 0 ]; then echo "ERROR: PET processing in container failed"; exit 1; fi
 echo "--- In-container processing completed successfully ---"
 
