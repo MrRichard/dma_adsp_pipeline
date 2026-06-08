@@ -833,28 +833,31 @@ echo "Registration completed."
 echo "Creating 4D binarized mask for PETPVC"
 mri_binarize --i /fs_subjects/{session_id}/mri/aseg.mgz \
   --match 2 41 7 46 251 252 253 254 255 16 \
-  --o wm_mask.nii.gz
+  --o /output/wm_mask.nii.gz
 
 # Extract Gray Matter
 mri_binarize --i /fs_subjects/{session_id}/mri/aseg.mgz \
   --match 3 42 8 9 10 11 12 13 17 18 26 27 28 47 48 49 50 51 52 53 54 58 59 60 \
-  --o gm_mask.nii.gz
+  --o /output/gm_mask.nii.gz
 
 # Extract CSF
 mri_binarize --i /fs_subjects/{session_id}/mri/aseg.mgz \
   --match 4 5 14 15 24 43 44 \
-  --o csf_mask.nii.gz
+  --o /output/csf_mask.nii.gz
 
-# Merge into 4D volume (WM, GM, CSF order)
-mri_concat gm_mask.nii.gz wm_mask.nii.gz csf_mask.nii.gz --o tissue_masks_4d.nii.gz
+# Merge into 4D volume (GM, WM, CSF order for PETPVC)
+mri_concat /output/gm_mask.nii.gz /output/wm_mask.nii.gz /output/csf_mask.nii.gz --o /output/tissue_masks_4d.nii.gz
+if [ $? -ne 0 ]; then echo "ERROR: tissue mask creation failed"; exit 1; fi
 
 echo "--- SUVR Calculation ---"
 if [ "{tracer}" = "pib" ]; then
     cd /output/
     mri_binarize --i /fs_subjects/{session_id}/mri/aparc+aseg.mgz --match 47 8 --o cerebellum_ref.mgz
     mri_vol2vol --mov cerebellum_ref.mgz --targ {tracer}_pet_space-T1w.nii.gz --regheader --o cerebellum_ref_pet_space.nii.gz --nearest
-    ref_val=$(mri_segstats --i {tracer}_pet_space-T1w.nii.gz --seg cerebellum_ref_pet_space.nii.gz --id 1 --avgwf mri_segstats.txt | grep -E '^[0-9]' | tail -n 1 | awk '{{print $6}}')
+    ref_val=$(mri_segstats --i {tracer}_pet_space-T1w.nii.gz --seg cerebellum_ref_pet_space.nii.gz --id 1 | grep -v '^#' | grep -E '[0-9]' | tail -n 1 | awk '{{print $6}}')
     echo "Reference region (cerebellum_ref) value is $ref_val"
+    echo "cerebellum_ref_mean=$ref_val" > reference_region_value.txt
+    echo "Cerebellum reference region mean (SUVR denominator): $ref_val" >> /output/provenance.txt
     if [ $(echo "$ref_val > 0" | bc -l) -eq 1 ]; then
         mri_calc -o {tracer}_SUVR.nii.gz {tracer}_pet_space-T1w.nii.gz div $ref_val
     else
@@ -870,6 +873,10 @@ echo "SUVR calculation step completed."
 {pvc_section}
 
 echo "--- Extracting ROI statistics (Raw) ---"
+if [ ! -f /fs_subjects/{session_id}/mri/aparc+aseg.mgz ]; then
+    echo "ERROR: aparc+aseg.mgz not found -- FreeSurfer recon may be incomplete for {session_id}"
+    exit 1
+fi
 mri_segstats --i {tracer}_SUVR.nii.gz \\
              --seg /fs_subjects/{session_id}/mri/aparc+aseg.mgz \\
              --ctab {self.config.freesurfer_home}/FreeSurferColorLUT.txt \\
