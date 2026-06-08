@@ -53,6 +53,8 @@ class PipelineOrchestrator:
         pet_only: bool = False,
         all_structurals: bool = False,
         incomplete_only: bool = False,
+        subjects: Optional[List[str]] = None,
+        limit: Optional[int] = None,
     ) -> Dict[str, List[Path]]:
         """
         Run the complete MR-PET processing pipeline
@@ -109,6 +111,20 @@ class PipelineOrchestrator:
         if not sessions_to_process:
             self.logger.warning("No sessions found that meet the criteria for processing.")
             return {'freesurfer': [], 'pet': [], 'post_recon': []}
+
+        # Apply subject filter
+        if subjects:
+            normalized = [s if s.startswith('sub-') else f'sub-{s}' for s in subjects]
+            sessions_to_process = [s for s in sessions_to_process if s.subject in normalized]
+            self.logger.info(f"Subject filter applied: {len(sessions_to_process)} session(s) selected")
+            if not sessions_to_process:
+                self.logger.warning(f"No sessions matched subjects: {subjects}")
+                return {'freesurfer': [], 'pet': [], 'post_recon': []}
+
+        # Apply batch size limit
+        if limit and len(sessions_to_process) > limit:
+            sessions_to_process = sessions_to_process[:limit]
+            self.logger.info(f"Limit applied: processing first {limit} session(s)")
 
         # Step 5: Generate processing jobs
         self.logger.info("Step 5: Generating SLURM jobs")

@@ -10,4 +10,5 @@ mr_pet_pipeline/config/config.yaml
 mr_pet_pipeline/.venv
 backup_jobs/
 GEMINI.md
+CLAUDE.md
 .DS_Store

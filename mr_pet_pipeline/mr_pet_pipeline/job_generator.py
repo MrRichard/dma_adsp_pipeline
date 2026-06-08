@@ -945,7 +945,7 @@ if [ "{self.config.pet_preprocessing.get('use_json_metadata', True)}" = "True" ]
     PET_JSON_DIR=$(dirname "$PET_FILE")
     PET_BASENAME=$(basename "$PET_FILE" .nii.gz)
     PET_BASENAME=$(basename "$PET_BASENAME" .nii)
-    PET_JSON="$PET_JSON_DIR/${PET_BASENAME}.json"
+    PET_JSON="$PET_JSON_DIR/${{PET_BASENAME}}.json"
     
     if [ -f "$PET_JSON" ]; then
         echo "=== Parsing PET sidecar JSON metadata ==="
@@ -966,7 +966,7 @@ if [ "{self.config.pet_preprocessing.get('use_json_metadata', True)}" = "True" ]
             DIFF_SEC=$(( SCN_SEC - INJ_SEC ))
             DIFF_MIN=$(python3 -c "print($DIFF_SEC / 60)")
             echo "Injection-to-scan delay (min): $DIFF_MIN" >> $OUTPUT_DIR/provenance.txt
-            echo "Injection-to-scan delay: ${DIFF_MIN} minutes"
+            echo "Injection-to-scan delay: ${{DIFF_MIN}} minutes"
         fi
     else
         echo "WARNING: PET sidecar JSON not found at $PET_JSON"

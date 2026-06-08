@@ -238,6 +238,23 @@ python scripts/run_pipeline.py --config config.yaml --verbose
 python scripts/run_pipeline.py --config config.yaml --validate-only
 ```
 
+### Testing with a Subset of Sessions
+
+Use `--subject` or `--limit` to process a single case or a small batch without running the full cohort.
+
+```bash
+# Run a single subject (sub- prefix is optional)
+python scripts/run_pipeline.py --config config.yaml --subject sub-1001
+
+# Run multiple specific subjects
+python scripts/run_pipeline.py --config config.yaml --subject sub-1001 sub-1002 sub-1003
+
+# Run only the first N matched sessions
+python scripts/run_pipeline.py --config config.yaml --limit 1
+```
+
+These flags are compatible with all other processing mode flags (`--post-recon`, `--pet-only`, etc.) and apply after session matching and status filtering.
+
 ### Workflow
 
 1. **Pipeline Setup** - The script will:
@@ -605,11 +622,14 @@ pet_dir/
 ### Testing
 
 ```bash
-# Test with dry-run
-python scripts/run_pipeline.py --config test_config.yaml --dry-run --verbose
-
-# Test with small dataset
+# Validate config only
 python scripts/run_pipeline.py --config test_config.yaml --validate-only
+
+# Dry-run on a single subject
+python scripts/run_pipeline.py --config test_config.yaml --subject sub-1001 --dry-run --verbose
+
+# Dry-run on the first 3 matched sessions
+python scripts/run_pipeline.py --config test_config.yaml --limit 3 --dry-run
 ```
 
 ---

@@ -85,6 +85,18 @@ Examples:
         action='store_true',
         help='Run only structural processing, ignoring config file settings for PET'
     )
+    parser.add_argument(
+        '--subject',
+        nargs='+',
+        metavar='SUBJECT_ID',
+        help='Limit processing to one or more subjects (e.g. sub-1001 or 1001). Multiple IDs separated by spaces.'
+    )
+    parser.add_argument(
+        '--limit',
+        type=int,
+        metavar='N',
+        help='Limit processing to the first N sessions (useful for testing)'
+    )
 
     args = parser.parse_args()
 
@@ -144,7 +156,9 @@ Examples:
             post_recon_only=args.post_recon,
             pet_only=args.pet_only,
             all_structurals=args.all_structurals,
-            incomplete_only=args.incomplete_recon_only
+            incomplete_only=args.incomplete_recon_only,
+            subjects=args.subject,
+            limit=args.limit,
         )
         
         # Print summary
