@@ -853,8 +853,18 @@ echo "--- SUVR Calculation ---"
 if [ "{tracer}" = "pib" ]; then
     cd /output/
     mri_binarize --i /fs_subjects/{session_id}/mri/aparc+aseg.mgz --match 47 8 --o cerebellum_ref.mgz
+    if [ $? -ne 0 ]; then echo "ERROR: cerebellum binarization failed"; exit 1; fi
     mri_vol2vol --mov cerebellum_ref.mgz --targ {tracer}_pet_space-T1w.nii.gz --regheader --o cerebellum_ref_pet_space.nii.gz --nearest
-    ref_val=$(mri_segstats --i {tracer}_pet_space-T1w.nii.gz --seg cerebellum_ref_pet_space.nii.gz --id 1 | grep -v '^#' | grep -E '[0-9]' | tail -n 1 | awk '{{print $6}}')
+    if [ $? -ne 0 ]; then echo "ERROR: cerebellum mask resampling failed"; exit 1; fi
+    n_cerebellum_vox=$(mri_segstats --seg cerebellum_ref_pet_space.nii.gz --id 1 --sum /tmp/cerebellum_check.txt 2>/dev/null; grep -v '^#' /tmp/cerebellum_check.txt | awk 'NF>=3 {{print $3}}' | head -1)
+    echo "DEBUG: cerebellum mask voxel count: $n_cerebellum_vox"
+    if [ -z "$n_cerebellum_vox" ] || [ "$n_cerebellum_vox" -eq 0 ] 2>/dev/null; then
+        echo "ERROR: cerebellum reference mask has no voxels after resampling to PET space. Check header alignment."
+        exit 1
+    fi
+    mri_segstats --i {tracer}_pet_space-T1w.nii.gz --seg cerebellum_ref_pet_space.nii.gz --id 1 --sum /tmp/cerebellum_segstats.txt
+    echo "DEBUG: mri_segstats output:"; cat /tmp/cerebellum_segstats.txt
+    ref_val=$(grep -v '^#' /tmp/cerebellum_segstats.txt | awk 'NF>=6 {{print $6}}' | grep -E '^[0-9.-]+$' | head -1)
     echo "Reference region (cerebellum_ref) value is $ref_val"
     echo "cerebellum_ref_mean=$ref_val" > reference_region_value.txt
     echo "Cerebellum reference region mean (SUVR denominator): $ref_val" >> /output/provenance.txt
