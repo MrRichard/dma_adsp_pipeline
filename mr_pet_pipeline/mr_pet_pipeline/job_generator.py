@@ -857,10 +857,10 @@ if [ "{tracer}" = "pib" ]; then
     # Convert to NIfTI for QC visualization (cerebellum_ref.mgz is already in the same space as the PET)
     mri_convert cerebellum_ref.mgz cerebellum_ref_pet_space.nii.gz
     # Use cerebellum_ref.mgz directly -- both it and {tracer}_pet_space-T1w.nii.gz share norm.mgz geometry
-    mri_segstats --i {tracer}_pet_space-T1w.nii.gz --seg cerebellum_ref.mgz --id 1 --sum /tmp/cerebellum_segstats.txt
+    mri_segstats --i {tracer}_pet_space-T1w.nii.gz --seg cerebellum_ref.mgz --id 1 --sum cerebellum_segstats.txt
     if [ $? -ne 0 ]; then echo "ERROR: cerebellum segstats failed"; exit 1; fi
-    echo "DEBUG: mri_segstats output:"; cat /tmp/cerebellum_segstats.txt
-    ref_val=$(grep -v '^#' /tmp/cerebellum_segstats.txt | awk 'NF>=6 {{print $6}}' | grep -E '^[0-9.-]+$' | head -1)
+    echo "DEBUG: mri_segstats output:"; cat cerebellum_segstats.txt
+    ref_val=$(grep -v '^#' cerebellum_segstats.txt | awk 'NF>=6 {{print $6}}' | grep -E '^[0-9.-]+$' | head -1)
     echo "Reference region (cerebellum_ref) value is $ref_val"
     echo "cerebellum_ref_mean=$ref_val" > reference_region_value.txt
     echo "Cerebellum reference region mean (SUVR denominator): $ref_val" >> /output/provenance.txt
