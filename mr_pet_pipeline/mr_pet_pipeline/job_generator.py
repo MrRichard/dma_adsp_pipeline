@@ -806,8 +806,9 @@ echo "PVC processing completed at: $(date)"
         # Choose the correct input image for the container
         # If ANTs preprocessing ran, we bind-mount the preprocessed file as input
         container_input = f"preproc_mean_{tracer}_{session_id}.nii.gz" if use_ants else f"$(basename {session.pet_files[tracer]})"
-        container_mri_concat = f"""# Skipping mri_concat -- preprocessing was done on host via ANTs"""
-        if not use_ants:
+        if use_ants:
+            container_mri_concat = f"""cp input_{tracer}.nii.gz mean_{tracer}_on_MR.nii.gz && gunzip -f mean_{tracer}_on_MR.nii.gz"""
+        else:
             container_mri_concat = f"""mri_concat input_{tracer}.nii.gz --mean --o mean_{tracer}_on_MR.nii"""
 
         # This heredoc contains the script that runs *inside* the main FreeSurfer container
