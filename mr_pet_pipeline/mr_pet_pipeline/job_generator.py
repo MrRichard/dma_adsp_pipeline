@@ -470,8 +470,22 @@ echo "Motion correction completed."
 echo "Splitting motion-corrected PET into frames..."
 fslsplit $OUTPUT_DIR/mc_PET_{tracer}_{session_id}.nii $OUTPUT_DIR/vol_{tracer}_ -t
 
-n_frames=$(fslnvols $OUTPUT_DIR/mc_PET_{tracer}_{session_id}.nii)
+# Count from actual split files (robust to .nii/.nii.gz output type)
+n_frames=$(ls $OUTPUT_DIR/vol_{tracer}_[0-9]*.nii* 2>/dev/null | wc -l)
 echo "Total frames: $n_frames"
+
+if [ -z "$n_frames" ] || [ "$n_frames" -eq 0 ]; then
+    echo "ERROR: Frame splitting failed - no frame files found in $OUTPUT_DIR"
+    exit 1
+fi
+
+# Detect extension from first split frame (.nii or .nii.gz)
+first_frame=$(ls $OUTPUT_DIR/vol_{tracer}_[0-9]*.nii* 2>/dev/null | sort | head -1)
+if [[ "$first_frame" == *.nii.gz ]]; then
+    vol_ext="nii.gz"
+else
+    vol_ext="nii"
+fi
 
 # Safety: if frames are fewer than requested, use all available
 if [ "$n_frames" -lt "{late_count}" ]; then
@@ -486,7 +500,7 @@ echo "Using last $late_count frames (starting at frame $start_idx) for time aver
 
 last_frames=""
 for i in $(seq $start_idx $(( n_frames - 1 ))); do
-    frame=$OUTPUT_DIR/vol_{tracer}_$(printf '%04d' $i).nii
+    frame=$OUTPUT_DIR/vol_{tracer}_$(printf '%04d' $i).$vol_ext
     echo "  Including frame: $frame"
     last_frames="$last_frames $frame"
 done
