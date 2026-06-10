@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 
 import argparse
+import matplotlib
+matplotlib.use('Agg')  # non-interactive backend required for headless HPC nodes
+import matplotlib.pyplot as plt
 import nibabel as nib
 from nilearn import plotting
-import matplotlib.pyplot as plt
 import numpy as np
 
 def create_qc_mosaic(base_image_path, overlay_image_path, output_path, title, off_center_sag=20):
